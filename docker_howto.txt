@@ -1,0 +1,13 @@
+Building a networking component may require libraries not available or installable in your normal environment.
+As of late 2018 the networking contrib extensions to TensorFlow 1.x can be built in a docker container, as follows.
+
+1. Ensure docker is installed.
+2. Invoke a docker container with the latest nightly development build:
+   $ docker run -it -w /tensorflow -v $PWD:/mnt -e HOST_PERMS"$(id -u):$(id -g)" tensorflow/tensorflow:nightly-devel bash
+3. Configure for bazel build
+   $ ./configure
+4. Install any necessary additional packages, e.g.
+   $ apt-get update  
+   $ apt-get install libibverbs-dev
+5. Build with the desired extension
+   $ bazel build --config=verbs //tensorflow/tools/pip_package:build_pip_package
