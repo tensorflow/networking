@@ -1,0 +1,5 @@
+This repository is for platform-specific networking extensions to core TensorFlow and related
+utilities (e.g. testing).
+
+The design goal is to work towards separately compilable plugins, but initially we'll just be porting the
+networking related contrib directories since TensorFlow 2.0 will be dropping contrib.
