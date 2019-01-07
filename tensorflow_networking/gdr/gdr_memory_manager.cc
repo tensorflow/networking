@@ -15,7 +15,7 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_GDR
 
-#include "tensorflow/contrib/gdr/gdr_memory_manager.h"
+#include "tensorflow_networking/gdr/gdr_memory_manager.h"
 
 #include <atomic>
 #include <cerrno>
@@ -27,7 +27,7 @@ limitations under the License.
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
-#include "tensorflow/contrib/gdr/gdr.pb.h"
+#include "tensorflow_networking/gdr/gdr.pb.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"

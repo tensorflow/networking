@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_GDR_GDR_SERVER_LIB_H_
 #define TENSORFLOW_CONTRIB_GDR_GDR_SERVER_LIB_H_
 
-#include "tensorflow/contrib/gdr/gdr_memory_manager.h"
+#include "tensorflow_networking/gdr/gdr_memory_manager.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 
 namespace tensorflow {

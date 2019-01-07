@@ -1,10 +1,6 @@
 # Description:
 #   GPU Direct RDMA Out-of-Band Tensor transport for TensorFlow.
 
-package(default_visibility = [
-    "//tensorflow:__subpackages__",
-])
-
 licenses(["notice"])  # Apache 2.0
 
 exports_files(["LICENSE"])
@@ -17,14 +13,10 @@ filegroup(
     ]),
 )
 
-load(
-    "//tensorflow:tensorflow.bzl",
-    "tf_cuda_library",
-)
 
 # For platform specific build config
 load(
-    "//tensorflow/core:platform/default/build_config.bzl",
+    "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
     "tf_proto_library_cc",
 )
 
@@ -33,7 +25,7 @@ tf_proto_library_cc(
     srcs = ["gdr.proto"],
     cc_api_version = 2,
     visibility = [
-        "//tensorflow:__subpackages__",
+        "//tensorflow_networking:__subpackages__",
     ],
 )
 
@@ -41,20 +33,12 @@ cc_library(
     name = "gdr_memory_manager",
     srcs = ["gdr_memory_manager.cc"],
     hdrs = ["gdr_memory_manager.h"],
-    linkopts = select({
-        "//tensorflow:with_gdr_support": [
+    linkopts = [
             "-libverbs",
             "-lrdmacm",
-        ],
-        "//conditions:default": [],
-    }),
+    ],
     deps = [
         ":gdr_proto_cc",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:gpu_runtime",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
     ],
 )
 
@@ -64,21 +48,16 @@ cc_library(
     hdrs = ["gdr_worker.h"],
     deps = [
         ":gdr_memory_manager",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:gpu_runtime",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core/distributed_runtime:graph_mgr",
-        "//tensorflow/core/distributed_runtime:recent_request_ids",
-        "//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
-        "//tensorflow/core/distributed_runtime:worker",
-        "//tensorflow/core/distributed_runtime:worker_cache",
-        "//tensorflow/core/distributed_runtime:worker_session",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_call",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_tensor_coding",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_util",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_worker_service",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:graph_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:recent_request_ids",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_session",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_call",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_tensor_coding",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_util",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_worker_service",
     ],
 )
 
@@ -88,15 +67,12 @@ cc_library(
     hdrs = ["gdr_rendezvous_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
-        "//tensorflow/core/distributed_runtime:request_id",
-        "//tensorflow/core/distributed_runtime:tensor_coding",
-        "//tensorflow/core/distributed_runtime:worker_cache",
-        "//tensorflow/core/distributed_runtime:worker_env",
-        "//tensorflow/core/distributed_runtime:worker_interface",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:tensor_coding",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_interface",
     ],
 )
 
@@ -109,7 +85,7 @@ cc_library(
         ":gdr_memory_manager",
         ":gdr_rendezvous_mgr",
         ":gdr_worker",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
     ],
     alwayslink = 1,
 )
