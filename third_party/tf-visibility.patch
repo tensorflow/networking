@@ -1,0 +1,24 @@
+diff --git a/tensorflow/core/distributed_runtime/BUILD b/tensorflow/core/distributed_runtime/BUILD
+--- a/tensorflow/core/distributed_runtime/BUILD
++++ b/tensorflow/core/distributed_runtime/BUILD
+@@ -31,7 +31,7 @@ load(
+ )
+ 
+ package(default_visibility = [
+-    "//tensorflow:internal",
++    "//visibility:public",
+ ])
+ 
+ cc_library(
+diff --git a/tensorflow/core/distributed_runtime/rpc/BUILD b/tensorflow/core/distributed_runtime/rpc/BUILD
+--- a/tensorflow/core/distributed_runtime/rpc/BUILD
++++ b/tensorflow/core/distributed_runtime/rpc/BUILD
+@@ -33,7 +33,7 @@ load(
+ )
+ 
+ package(default_visibility = [
+-    "//tensorflow:internal",
++    "//visibility:public",
+ ])
+ 
+ cc_library(

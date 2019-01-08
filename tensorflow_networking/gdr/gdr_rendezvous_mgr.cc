@@ -13,10 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/contrib/gdr/gdr_rendezvous_mgr.h"
+#include "tensorflow_networking/gdr/gdr_rendezvous_mgr.h"
 
 #include "google/protobuf/any.pb.h"
-#include "tensorflow/contrib/gdr/gdr_memory_manager.h"
+#include "tensorflow_networking/gdr/gdr_memory_manager.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/process_util.h"
