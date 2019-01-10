@@ -39,6 +39,9 @@ cc_library(
         "@org_tensorflow//tensorflow/core:lib",
         "//third_party/mpi",
     ],
+    linkopts = [
+            "-L third_party/mpi -lmpi",
+   ]
 )
 
 cc_library(
@@ -57,6 +60,9 @@ cc_library(
         "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
         "//third_party/mpi",
     ],
+    linkopts = [
+            "-L third_party/mpi -lmpi",
+   ]
 )
 
 cc_library(
