@@ -15,7 +15,7 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_MPI
 
-#include "tensorflow/contrib/mpi/mpi_server_lib.h"
+#include "tensorflow_networking/mpi/mpi_server_lib.h"
 
 #include <string>
 #include <utility>

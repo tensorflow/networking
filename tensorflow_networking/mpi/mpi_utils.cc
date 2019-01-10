@@ -15,7 +15,7 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_MPI
 
-#include "tensorflow/contrib/mpi/mpi_utils.h"
+#include "tensorflow_networking/mpi/mpi_utils.h"
 namespace tensorflow {
 
 #define max_worker_name_length 128

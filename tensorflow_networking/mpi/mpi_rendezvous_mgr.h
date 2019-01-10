@@ -30,8 +30,8 @@ limitations under the License.
 
 #include <iostream>
 
-#include "tensorflow/contrib/mpi/mpi_msg.pb.h"
-#include "tensorflow/contrib/mpi/mpi_utils.h"
+#include "tensorflow_networking/mpi/mpi_msg.pb.h"
+#include "tensorflow_networking/mpi/mpi_utils.h"
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/distributed_runtime/request_id.h"

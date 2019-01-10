@@ -15,7 +15,7 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_MPI
 
-#include "tensorflow/contrib/mpi/mpi_rendezvous_mgr.h"
+#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
 
 #include <chrono>
 #include <functional>
