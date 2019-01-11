@@ -20,6 +20,10 @@ load(
     "tf_proto_library_cc",
 )
 
+load("//third_party/mpi:mpi.bzl", "mpi_copts")
+load("//third_party/mpi:mpi.bzl", "mpi_linkopts")
+load("//third_party/mpi:mpi.bzl", "mpi_defines")
+
 tf_proto_library_cc(
     name = "mpi_msg_proto",
     srcs = ["mpi_msg.proto"],
@@ -37,11 +41,10 @@ cc_library(
     deps = [
         "@org_tensorflow//tensorflow/core:framework",
         "@org_tensorflow//tensorflow/core:lib",
-        "//third_party/mpi",
     ],
-    linkopts = [
-            "-L third_party/mpi -lmpi",
-   ]
+    copts    = mpi_copts(),
+    linkopts = mpi_linkopts(),
+    defines  = mpi_defines(),
 )
 
 cc_library(
@@ -58,11 +61,9 @@ cc_library(
         "@org_tensorflow//tensorflow/core/distributed_runtime:session_mgr",
         "@org_tensorflow//tensorflow/core/distributed_runtime:tensor_coding",
         "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
-        "//third_party/mpi",
     ],
-    linkopts = [
-            "-L third_party/mpi -lmpi",
-   ]
+    copts    = mpi_copts(),
+    linkopts = mpi_linkopts(),
 )
 
 cc_library(
@@ -76,3 +77,4 @@ cc_library(
     ],
     alwayslink = 1,
 )
+
