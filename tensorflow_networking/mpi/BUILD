@@ -1,7 +1,6 @@
 # Description:
 #   MPI based communication interfaces and implementations for TensorFlow.
 
-
 licenses(["notice"])  # Apache 2.0
 
 exports_files(["LICENSE"])
@@ -19,7 +18,6 @@ load(
     "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
     "tf_proto_library_cc",
 )
-
 load("//third_party/mpi:mpi.bzl", "mpi_copts")
 load("//third_party/mpi:mpi.bzl", "mpi_linkopts")
 load("//third_party/mpi:mpi.bzl", "mpi_defines")
@@ -38,19 +36,21 @@ cc_library(
     name = "mpi_utils",
     srcs = ["mpi_utils.cc"],
     hdrs = ["mpi_utils.h"],
+    copts = mpi_copts(),
+    defines = mpi_defines(),
+    linkopts = mpi_linkopts(),
     deps = [
         "@org_tensorflow//tensorflow/core:framework",
         "@org_tensorflow//tensorflow/core:lib",
     ],
-    copts    = mpi_copts(),
-    linkopts = mpi_linkopts(),
-    defines  = mpi_defines(),
 )
 
 cc_library(
     name = "mpi_rendezvous_mgr",
     srcs = ["mpi_rendezvous_mgr.cc"],
     hdrs = ["mpi_rendezvous_mgr.h"],
+    copts = mpi_copts(),
+    linkopts = mpi_linkopts(),
     deps = [
         ":mpi_msg_proto_cc",
         ":mpi_utils",
@@ -62,8 +62,6 @@ cc_library(
         "@org_tensorflow//tensorflow/core/distributed_runtime:tensor_coding",
         "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
     ],
-    copts    = mpi_copts(),
-    linkopts = mpi_linkopts(),
 )
 
 cc_library(
@@ -77,4 +75,3 @@ cc_library(
     ],
     alwayslink = 1,
 )
-
