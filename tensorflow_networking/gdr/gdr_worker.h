@@ -16,10 +16,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_GDR_GDR_WORKER_H_
 #define TENSORFLOW_CONTRIB_GDR_GDR_WORKER_H_
 
-#include "tensorflow_networking/gdr/gdr_memory_manager.h"
-
 #include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_service.h"
+
+#include "tensorflow_networking/gdr/gdr_memory_manager.h"
 
 namespace tensorflow {
 

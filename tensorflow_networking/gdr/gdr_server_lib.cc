@@ -16,11 +16,9 @@ limitations under the License.
 #include "tensorflow_networking/gdr/gdr_server_lib.h"
 
 #include "grpc/support/alloc.h"
-#include "tensorflow_networking/gdr/gdr_memory_manager.h"
+
 #include "tensorflow_networking/gdr/gdr_rendezvous_mgr.h"
 #include "tensorflow_networking/gdr/gdr_worker.h"
-
-#include "grpc/support/alloc.h"
 
 namespace tensorflow {
 
