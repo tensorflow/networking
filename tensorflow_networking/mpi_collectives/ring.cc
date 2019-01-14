@@ -17,7 +17,7 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "tensorflow/contrib/mpi_collectives/ring.h"
+#include "tensorflow_networking/mpi_collectives/ring.h"
 
 namespace tensorflow {
 namespace contrib {

@@ -21,6 +21,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/mutex.h"
 
@@ -34,9 +35,10 @@ limitations under the License.
 #include "tensorflow/stream_executor/lib/statusor.h"
 
 #define OMPI_SKIP_MPICXX
-#include "third_party/mpi/mpi.h"
-#include "tensorflow/contrib/mpi_collectives/kernels/ring.h"
-#include "tensorflow/contrib/mpi_collectives/mpi_message.pb.h"
+//#include "third_party/mpi/mpi.h"
+#include <mpi.h>
+#include "tensorflow_networking/mpi_collectives/mpi_message.pb.h"
+#include "tensorflow_networking/mpi_collectives/ring.h"
 
 /*
  * MPI Allreduce and Allgather Ops for TensorFlow.
@@ -73,14 +75,14 @@ limitations under the License.
  */
 
 template <class T>
-using StatusOr = stream_executor::port::StatusOr<T>;
+using StatusOr = se::port::StatusOr<T>;
 
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
 namespace tensorflow {
 namespace contrib {
-namespace mpi_collectives {
+namespace mpi {
 
 // Make sure template specializations are generated in the ring.cu.cc and the
 // ring.cc file, not in this file.
@@ -876,6 +878,14 @@ REGISTER_KERNEL_BUILDER(Name("MPIInit").Device(DEVICE_GPU),
                         MPIInitOp<GPUDevice>);
 #endif
 
+REGISTER_OP("MPIInit").Doc(R"doc(
+Initialize MPI for the current process.
+
+If this is run on a GPU, then that GPU must be used for all future MPI
+operations. If it is run on CPU, then all future MPI operations must also
+run on CPU.
+)doc");
+
 // Op to get the current MPI Size.
 template <typename Device>
 class MPISizeOp : public OpKernel {
@@ -901,6 +911,21 @@ REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_CPU),
 REGISTER_KERNEL_BUILDER(Name("MPISize").Device(DEVICE_GPU).HostMemory("size"),
                         MPISizeOp<GPUDevice>);
 #endif
+
+REGISTER_OP("MPISize")
+    .Output("size: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Returns the number of running MPI processes.
+
+More precisely, returns the number of MPI processes in the group associated
+with the MPI_COMM_WORLD communicator.
+
+size:   Size of the MPI group.
+)doc");
 
 // Op to get the current MPI Rank.
 template <typename Device>
@@ -928,6 +953,21 @@ REGISTER_KERNEL_BUILDER(Name("MPIRank").Device(DEVICE_GPU).HostMemory("rank"),
                         MPIRankOp<GPUDevice>);
 #endif
 
+REGISTER_OP("MPIRank")
+    .Output("rank: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Returns the index of the current process in the MPI group.
+
+More precisely, returns the rank of the calling process in the MPI_COMM_WORLD
+communicator.
+
+rank:   Rank of the calling process.
+)doc");
+
 // Op to get the current local MPI Rank.
 template <typename Device>
 class MPILocalRankOp : public OpKernel {
@@ -954,6 +994,21 @@ REGISTER_KERNEL_BUILDER(
     Name("MPILocalRank").Device(DEVICE_GPU).HostMemory("rank"),
     MPILocalRankOp<GPUDevice>);
 #endif
+
+REGISTER_OP("MPILocalRank")
+    .Output("rank: int32")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->Scalar());
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Returns the index of the current process in the node it is on.
+
+More precisely, returns the rank of the calling process in communicator that
+only spans the MPI processes running on that node.
+
+rank:   Rank of the calling process on the node it is on.
+)doc");
 
 template <typename Device>
 class MPIAllreduceOp : public AsyncOpKernel {
@@ -1028,6 +1083,28 @@ REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_CPU),
 REGISTER_KERNEL_BUILDER(Name("MPIAllreduce").Device(DEVICE_GPU),
                         MPIAllreduceOp<GPUDevice>);
 #endif
+
+REGISTER_OP("MPIAllreduce")
+    .Attr("T: {int32, int64, float32}")
+    .Input("tensor: T")
+    .Output("sum: T")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->input(0));
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Perform an MPI Allreduce on a tensor. All other processes that do a reduction
+on a tensor with the same name must have the same dimension for that tensor.
+Tensors are reduced with other tensors that have the same node name for the
+allreduce.
+
+Arguments
+    tensor:     A tensor to reduce.
+
+Output
+    sum:        A tensor with the same shape as `tensor`, summed across all
+                MPI processes.
+)doc");
 
 template <typename Device>
 class MPIAllgatherOp : public AsyncOpKernel {
@@ -1116,6 +1193,34 @@ class MPIAllgatherOp : public AsyncOpKernel {
   }
 };
 
+REGISTER_OP("MPIAllgather")
+    .Attr("T: {int32, int64, float32}")
+    .Attr("S: {int64}")
+    .Input("tensor: T")
+    .Input("sizes: S")
+    .Output("gathered: T")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle output;
+      TF_RETURN_IF_ERROR(
+          c->ReplaceDim(c->input(0), 0, c->UnknownDim(), &output));
+      c->set_output(0, output);
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Perform an MPI Allgather on a tensor. All other processes that do a gather on a
+tensor with the same name must have the same rank for that tensor, and have the
+same dimension on all but the first dimension.
+
+Arguments
+    tensor:     A tensor to gather.
+    sizes:      A tensor containing the first-dimension sizes of tensors to be
+                gathered from other ranks
+
+Output
+    gathered:   A tensor with the same shape as `tensor` except for the first
+                dimension, which is the sum of dimensions in `sizes`.
+)doc");
+
 REGISTER_KERNEL_BUILDER(
     Name("MPIAllgather").Device(DEVICE_CPU).HostMemory("sizes"),
     MPIAllgatherOp<CPUDevice>);
@@ -1125,7 +1230,7 @@ REGISTER_KERNEL_BUILDER(
     MPIAllgatherOp<GPUDevice>);
 #endif
 
-}  // namespace mpi_collectives
+}  // namespace mpi
 }  // namespace contrib
 }  // namespace tensorflow
 

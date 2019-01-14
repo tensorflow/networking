@@ -15,7 +15,7 @@ def mpi_defines():
 
 def if_mpi(if_true, if_false = []):
     return select({
-        "//tensorflow_networking:with_mpi_support": if_true,
+        "//tensorflow_networking:with_mpi_support2": if_true,
         "//conditions:default": if_false,
 })
 
