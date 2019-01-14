@@ -20,7 +20,6 @@ load(
 )
 load("//third_party/mpi:mpi.bzl", "mpi_copts")
 load("//third_party/mpi:mpi.bzl", "mpi_linkopts")
-load("//third_party/mpi:mpi.bzl", "mpi_defines")
 
 tf_proto_library_cc(
     name = "mpi_msg_proto",
@@ -37,11 +36,9 @@ cc_library(
     srcs = ["mpi_utils.cc"],
     hdrs = ["mpi_utils.h"],
     copts = mpi_copts(),
-    defines = mpi_defines(),
     linkopts = mpi_linkopts(),
     deps = [
-        "@org_tensorflow//tensorflow/core:framework",
-        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core:core",
     ],
 )
 
@@ -54,7 +51,7 @@ cc_library(
     deps = [
         ":mpi_msg_proto_cc",
         ":mpi_utils",
-        "@org_tensorflow//tensorflow/core:protos_cc",
+        "@org_tensorflow//tensorflow/core:core",
         "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
         "@org_tensorflow//tensorflow/core/distributed_runtime:recent_request_ids",
         "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
@@ -71,6 +68,7 @@ cc_library(
     linkstatic = 1,  # Seems to be needed since alwayslink is broken in bazel
     deps = [
         ":mpi_rendezvous_mgr",
+        ":mpi_utils",
         "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
     ],
     alwayslink = 1,

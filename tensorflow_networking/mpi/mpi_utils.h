@@ -16,8 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_
 #define TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_
 
-#ifdef TENSORFLOW_USE_MPI
-
 #include <map>
 #include <string>
 #include <vector>
@@ -59,5 +57,4 @@ class MPIUtils {
 };
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_MPI
 #endif  // TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_
