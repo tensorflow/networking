@@ -27,8 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV CI_BUILD_PYTHON python
 
-RUN git clone https://github.com/tensorflow/networking.git /tf_networking
-
 ARG USE_PYTHON_3_NOT_2
 ARG _PY_SUFFIX=${USE_PYTHON_3_NOT_2:+3}
 ARG PYTHON=python${_PY_SUFFIX}
@@ -80,5 +78,6 @@ RUN mkdir /bazel && \
     /bazel/installer.sh && \
     rm -f /bazel/installer.sh
 
+ADD . /tf_networking
 WORKDIR /tf_networking
 RUN bazel build -c opt //tensorflow_networking/gdr:gdr_server_lib
