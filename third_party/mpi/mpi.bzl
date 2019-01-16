@@ -2,11 +2,12 @@
 # based on the configuration options return one or the other
 
 def mpi_hdr():
-    MPI_LIB_IS_OPENMPI=True
-    hdrs = []
-    if MPI_LIB_IS_OPENMPI:
-        hdrs = ["mpi.h", "mpi_portable_platform.h"]  #When using OpenMPI
-    else:
-        hdrs = ["mpi.h", "mpio.h", "mpicxx.h"]  #When using MVAPICH
-    return hdrs
+    return if_openmpi(["mpi.h", "mpi_portable_platform.h"],
+                      ["mpi.h", "mpio.h", "mpicxx.h"])
+
+def if_openmpi(if_true, if_false = []):
+    return select({
+        "//tensorflow_networking:mpi_library_is_openmpi_based": if_true,
+        "//conditions:default": if_false,
+    })
 

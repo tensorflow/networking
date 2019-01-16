@@ -392,21 +392,6 @@ def set_mpi_home(environ_cp):
       error_msg='',
       suppress_default_error=True)
 
-def sed_in_place(filename, old, new):
-  """Replace old string with new string in file.
-
-  Args:
-    filename: string for filename.
-    old: string to replace.
-    new: new string to replace to.
-  """
-  with open(filename, 'r') as f:
-    filedata = f.read()
-  newdata = filedata.replace(old, new)
-  with open(filename, 'w') as f:
-    f.write(newdata)
-
-
 
 def set_other_mpi_vars(environ_cp):
   """Set other MPI related variables."""
@@ -432,21 +417,14 @@ def set_other_mpi_vars(environ_cp):
     symlink_force(
         os.path.join(include_home, 'mpi_portable_platform.h'),
         'third_party/mpi/mpi_portable_platform.h')
-    # TODO(gunan): avoid editing files in configure
-    sed_in_place('third_party/mpi/mpi.bzl', 'MPI_LIB_IS_OPENMPI=False',
-                 'MPI_LIB_IS_OPENMPI=True')
+    write_to_bazelrc("build --define mpi_library_is_openmpi_based=true")
   else:
     # MVAPICH / MPICH
     symlink_force(
         os.path.join(include_home, 'mpio.h'), 'third_party/mpi/mpio.h')
     symlink_force(
         os.path.join(include_home, 'mpicxx.h'), 'third_party/mpi/mpicxx.h')
-    # TODO(gunan): avoid editing files in configure
-    sed_in_place('third_party/mpi/mpi.bzl', 'MPI_LIB_IS_OPENMPI=True',
-                 'MPI_LIB_IS_OPENMPI=False')
-
-
-
+    write_to_bazelrc("build --define mpi_library_is_openmpi_based=false")
 
   if os.path.exists(os.path.join(mpi_home, 'lib/libmpi.so')):
     symlink_force(
@@ -461,7 +439,6 @@ def set_other_mpi_vars(environ_cp):
     raise ValueError(
         'Cannot find the MPI library file in %s/lib or %s/lib64 or %s/lib32' %
         mpi_home, mpi_home, mpi_home)
-
 
 
 def config_info_line(name, help_text):
@@ -488,7 +465,7 @@ def main():
   # environment variables.
   environ_cp = dict(os.environ)
 
-#  reset_tf_configure_bazelrc()
+  reset_tf_configure_bazelrc()
 
   set_build_var(environ_cp, 'TF_NEED_MPI', 'MPI', 'with_mpi_support', False)
   if environ_cp.get('TF_NEED_MPI') == '1':
