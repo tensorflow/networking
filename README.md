@@ -21,5 +21,5 @@ bazel build -c opt //tensorflow_networking/gdr:gdr_server_lib
 Using Docker:
 
 ```bash
-docker build -t tf_networking tensorflow_networking/gdr
+docker build -t tf_networking -f tensorflow_networking/gdr/Dockerfile .
 ```
