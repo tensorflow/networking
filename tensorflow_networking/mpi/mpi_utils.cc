@@ -13,9 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_MPI
-
-#include "tensorflow/contrib/mpi/mpi_utils.h"
+#include "tensorflow_networking/mpi/mpi_utils.h"
 namespace tensorflow {
 
 #define max_worker_name_length 128
@@ -68,5 +66,3 @@ void MPIUtils::InitMPI() {
 }
 
 }  // namespace tensorflow
-
-#endif  // TENSORFLOW_USE_MPI

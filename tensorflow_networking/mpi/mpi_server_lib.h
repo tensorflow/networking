@@ -16,11 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_MPI_MPI_SERVER_LIB_H_
 #define TENSORFLOW_CONTRIB_MPI_MPI_SERVER_LIB_H_
 
-#ifdef TENSORFLOW_USE_MPI
-
 #include <memory>
 
-#include "tensorflow/contrib/mpi/mpi_rendezvous_mgr.h"
+#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 
 namespace tensorflow {
@@ -50,5 +48,4 @@ class MPIServer : public GrpcServer {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_MPI
 #endif  // TENSORFLOW_CONTRIB_MPI_MPI_SERVER_LIB_H_

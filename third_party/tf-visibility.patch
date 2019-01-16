@@ -22,3 +22,17 @@ diff --git a/tensorflow/core/distributed_runtime/rpc/BUILD b/tensorflow/core/dis
  ])
  
  cc_library(
+
+
+diff --git a/tensorflow/core/BUILD b/tensorflow/core/BUILD
+--- a/tensorflow/core/BUILD
++++ b/tensorflow/core/BUILD
+@@ -2060,7 +2060,7 @@
+     cc_api_version = 2,
+     protodeps = tf_additional_all_protos() + [],
+     visibility = [
+-        "//tensorflow:internal",
++        "//visibility:public",
+     ],
+ )
+

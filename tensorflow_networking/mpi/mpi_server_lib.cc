@@ -13,10 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_MPI
-
-#include "tensorflow/contrib/mpi/mpi_server_lib.h"
-
 #include <string>
 #include <utility>
 
@@ -26,6 +22,8 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
+
+#include "tensorflow_networking/mpi/mpi_server_lib.h"
 
 namespace tensorflow {
 
@@ -109,4 +107,3 @@ static MPIServerRegistrar registrar;
 }  // namespace
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_MPI
