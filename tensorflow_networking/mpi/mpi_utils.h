@@ -25,7 +25,7 @@ limitations under the License.
 
 // Skip MPI C++ bindings support, this matches the usage in other places
 #define OMPI_SKIP_MPICXX
-#include <mpi.h>
+#include "third_party/mpi/mpi.h"
 #define MPI_CHECK(cmd)                                                \
   do {                                                                \
     int mpi_errno = cmd;                                              \

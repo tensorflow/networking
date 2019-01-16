@@ -18,8 +18,6 @@ load(
     "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
     "tf_proto_library_cc",
 )
-load("//third_party/mpi:mpi.bzl", "mpi_copts")
-load("//third_party/mpi:mpi.bzl", "mpi_linkopts")
 
 tf_proto_library_cc(
     name = "mpi_msg_proto",
@@ -35,10 +33,9 @@ cc_library(
     name = "mpi_utils",
     srcs = ["mpi_utils.cc"],
     hdrs = ["mpi_utils.h"],
-    copts = mpi_copts(),
-    linkopts = mpi_linkopts(),
     deps = [
-        "@org_tensorflow//tensorflow/core:core",
+        "//third_party/mpi",
+        "@org_tensorflow//tensorflow/core",
     ],
 )
 
@@ -46,12 +43,11 @@ cc_library(
     name = "mpi_rendezvous_mgr",
     srcs = ["mpi_rendezvous_mgr.cc"],
     hdrs = ["mpi_rendezvous_mgr.h"],
-    copts = mpi_copts(),
-    linkopts = mpi_linkopts(),
     deps = [
         ":mpi_msg_proto_cc",
         ":mpi_utils",
-        "@org_tensorflow//tensorflow/core:core",
+        "//third_party/mpi",
+        "@org_tensorflow//tensorflow/core",
         "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
         "@org_tensorflow//tensorflow/core/distributed_runtime:recent_request_ids",
         "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
@@ -69,6 +65,7 @@ cc_library(
     deps = [
         ":mpi_rendezvous_mgr",
         ":mpi_utils",
+        "//third_party/mpi",
         "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
     ],
     alwayslink = 1,
