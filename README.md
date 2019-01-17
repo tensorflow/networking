@@ -52,7 +52,7 @@ docker build -t tf_networking -f tensorflow_networking/mpi/Dockerfile .
 ```
 
 
-#####  MPI collectives extension
+#####  `MPI collectives` extension
 
 Using Bazel:
 
