@@ -31,7 +31,7 @@ limitations under the License.
 
 // Needed to avoid header issues with C++-supporting MPI implementations
 #define OMPI_SKIP_MPICXX
-#include <mpi.h>
+#include "third_party/mpi/mpi.h"
 
 #define TAG_TENSOR 12
 

@@ -1,5 +1,5 @@
 config_setting(
-    name = "with_mpi_support2",
-    values = {"define": "with_mpi_support2=true"},
+    name = "mpi_library_is_openmpi_based",
+    values = {"define": "mpi_library_is_openmpi_based=true"},
     visibility = ["//visibility:public"],
 )

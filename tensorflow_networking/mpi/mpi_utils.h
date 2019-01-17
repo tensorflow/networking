@@ -16,8 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_
 #define TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_
 
-#ifdef TENSORFLOW_USE_MPI
-
 #include <map>
 #include <string>
 #include <vector>
@@ -27,7 +25,7 @@ limitations under the License.
 
 // Skip MPI C++ bindings support, this matches the usage in other places
 #define OMPI_SKIP_MPICXX
-#include <mpi.h>
+#include "third_party/mpi/mpi.h"
 #define MPI_CHECK(cmd)                                                \
   do {                                                                \
     int mpi_errno = cmd;                                              \
@@ -59,5 +57,4 @@ class MPIUtils {
 };
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_MPI
 #endif  // TENSORFLOW_CONTRIB_MPI_MPI_UTILS_H_

@@ -13,8 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_GDR
-
 #include "tensorflow_networking/gdr/gdr_memory_manager.h"
 
 #include <atomic>
@@ -27,7 +25,6 @@ limitations under the License.
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
-#include "tensorflow_networking/gdr/gdr.pb.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
@@ -37,6 +34,8 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/numa.h"
+
+#include "tensorflow_networking/gdr/gdr.pb.h"
 
 namespace tensorflow {
 
@@ -616,5 +615,3 @@ RemoteMemoryManager* CreateRemoteMemoryManager(const string& host,
 }
 
 }  // namespace tensorflow
-
-#endif  // TENSORFLOW_USE_GDR

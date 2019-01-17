@@ -16,8 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_MPI_MPI_RENDEZVOUS_MGR_H_
 #define TENSORFLOW_CONTRIB_MPI_MPI_RENDEZVOUS_MGR_H_
 
-#ifdef TENSORFLOW_USE_MPI
-
 #include <list>
 #include <map>
 #include <memory>
@@ -28,15 +26,15 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include <iostream>
 
-#include "tensorflow_networking/mpi/mpi_msg.pb.h"
-#include "tensorflow_networking/mpi/mpi_utils.h"
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/distributed_runtime/request_id.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
+
+#include "tensorflow_networking/mpi/mpi_msg.pb.h"
+#include "tensorflow_networking/mpi/mpi_utils.h"
 
 #define TAG_REQTENSOR 1010
 #define TAG_SENDTENSOR 2020
@@ -251,5 +249,4 @@ class MPIRendezvousMgr : public BaseRendezvousMgr {
 };  // MPIRendezvousMgr
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_MPI
 #endif  // TENSORFLOW_CONTRIB_MPI_MPI_RENDEZVOUS_MGR_H_

@@ -35,8 +35,7 @@ limitations under the License.
 #include "tensorflow/stream_executor/lib/statusor.h"
 
 #define OMPI_SKIP_MPICXX
-//#include "third_party/mpi/mpi.h"
-#include <mpi.h>
+#include "third_party/mpi/mpi.h"
 #include "tensorflow_networking/mpi_collectives/mpi_message.pb.h"
 #include "tensorflow_networking/mpi_collectives/ring.h"
 
