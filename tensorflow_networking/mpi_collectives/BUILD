@@ -63,8 +63,8 @@ tf_kernel_library(
         "kernels/ring.cu.cc",
     ],
     deps = [
-        "//third_party/mpi",
         ":mpi_message_proto_cc",
+        "//third_party/mpi",
         "@org_tensorflow//tensorflow/core",
     ],
     # TODO: Include?    alwayslink = 1,
