@@ -13,8 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include "tensorflow_networking/verbs/rdma_mgr.h"
 #include <fstream>
 #include <vector>
@@ -303,5 +301,3 @@ void RdmaMgr::InitAllocators() {
 }
 
 }  // end namespace tensorflow
-
-#endif

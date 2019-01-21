@@ -13,8 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include <fcntl.h>
 #include <cstdlib>
 
@@ -1674,5 +1672,3 @@ void RdmaTensorRequest::Start() {
 }
 
 }  // end namespace tensorflow
-
-#endif
