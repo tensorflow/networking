@@ -27,9 +27,10 @@ docker build -t tf_networking -f tensorflow_networking/gdr/Dockerfile .
 
 ####  MPI
 
-Note: This is for the `grpc+mpi` extension
 
-For the MPI extension the location to the MPI library has to be configured. The `configure` script is used to setup this configuration. The script will attempt to find the location of the `mpirun` binary and from there deduce the include and library paths. You can use the `MPI_HOME` environment variable if `mpirun` is not installed in your PATH or you want to use another base path for the MPI library. The configure script will create symbolic links inside the `third_party/mpi` folder to the relevant MPI header and library files. Furthermore the script will determine if your MPI installation is based on `OpenMPI` or on `MPICH` and sets this in the `.tf_networking_configure.bazelrc` file.
+For the MPI extensions the location to the MPI library has to be configured. The `configure` script is used to setup this configuration. The script will attempt to find the location of the `mpirun` binary and from there deduce the include and library paths. You can use the `MPI_HOME` environment variable if `mpirun` is not installed in your PATH or you want to use another base path for the MPI library. The configure script will create symbolic links inside the `third_party/mpi` folder to the relevant MPI header and library files. Furthermore the script will determine if your MPI installation is based on `OpenMPI` or on `MPICH` and sets this in the `.tf_networking_configure.bazelrc` file.
+
+#####  `grpc+mpi` extension
 
 Using Bazel:
 
@@ -49,3 +50,21 @@ Using Docker:
 ```bash
 docker build -t tf_networking -f tensorflow_networking/mpi/Dockerfile .
 ```
+
+
+#####  `MPI collectives` extension
+
+Using Bazel:
+
+By manually answering the relevant configuration questions
+```bash
+./configure
+bazel build -c opt //tensorflow_networking/mpi_collectives:all
+```
+
+Using Docker:
+
+```bash
+docker build -t tf_networking -f tensorflow_networking/mpi_collectives/Dockerfile .
+```
+
