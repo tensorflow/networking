@@ -9,7 +9,7 @@ networking related contrib directories since TensorFlow 2.0 will be dropping con
 
 ## Building
 
-Currently support building GDR and MPI extensions:
+Currently support building GDR, VERBS, and MPI extensions:
 
 #### GDR
 
@@ -23,6 +23,20 @@ Using Docker:
 
 ```bash
 docker build -t tf_networking -f tensorflow_networking/gdr/Dockerfile .
+```
+
+#### VERBS
+
+Using Bazel:
+
+```bash
+bazel build -c opt //tensorflow_networking/verbs:verbs_server_lib
+```
+
+Using Docker:
+
+```bash
+docker build -t tf_networking -f tensorflow_networking/verbs/Dockerfile .
 ```
 
 ####  MPI

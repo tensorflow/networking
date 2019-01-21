@@ -16,12 +16,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_RDMA_MGR_H_
 #define TENSORFLOW_CONTRIB_VERBS_RDMA_MGR_H_
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include <string>
 #include <unordered_map>
 
-#include "tensorflow/contrib/verbs/rdma.h"
+#include "tensorflow_networking/verbs/rdma.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 
@@ -55,5 +53,4 @@ class RdmaMgr {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_VERBS
 #endif  // TENSORFLOW_CONTRIB_VERBS_RDMA_MGR_H_

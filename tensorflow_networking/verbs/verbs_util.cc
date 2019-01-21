@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/contrib/verbs/verbs_util.h"
+#include "tensorflow_networking/verbs/verbs_util.h"
 
 #include <vector>
 

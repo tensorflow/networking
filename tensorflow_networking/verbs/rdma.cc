@@ -13,13 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include <fcntl.h>
 #include <cstdlib>
 
-#include "tensorflow/contrib/verbs/rdma.h"
-#include "tensorflow/contrib/verbs/verbs_service.pb.h"
+#include "tensorflow_networking/verbs/rdma.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/process_util.h"
@@ -1674,5 +1672,3 @@ void RdmaTensorRequest::Start() {
 }
 
 }  // end namespace tensorflow
-
-#endif

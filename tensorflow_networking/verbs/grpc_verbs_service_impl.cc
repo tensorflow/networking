@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/contrib/verbs/grpc_verbs_service_impl.h"
+#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
 
 #include "grpcpp/impl/codegen/async_stream.h"
 #include "grpcpp/impl/codegen/async_unary_call.h"

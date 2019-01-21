@@ -16,8 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_RDMA_H_
 #define TENSORFLOW_CONTRIB_VERBS_RDMA_H_
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include <infiniband/verbs.h>
 #include <cstring>  // for memset
 #include <functional>
@@ -27,7 +25,7 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
-#include "tensorflow/contrib/verbs/verbs_util.h"
+#include "tensorflow_networking/verbs/verbs_util.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/framework/rendezvous.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -523,5 +521,4 @@ class RdmaMessageBuffer {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_USE_VERBS
 #endif  // TENSORFLOW_CONTRIB_VERBS_RDMA_H_

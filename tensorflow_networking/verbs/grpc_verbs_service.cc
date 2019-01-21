@@ -13,13 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef TENSORFLOW_USE_VERBS
-
 #include "grpcpp/alarm.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/server_builder.h"
 
-#include "tensorflow/contrib/verbs/grpc_verbs_service.h"
+#include "tensorflow_networking/verbs/grpc_verbs_service.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
 
@@ -163,5 +161,3 @@ void SetNewVerbsService(GrpcVerbsService** handle, const WorkerEnv* worker_env,
 }
 
 }  // namespace tensorflow
-
-#endif  // TENSORFLOW_USE_VERBS
