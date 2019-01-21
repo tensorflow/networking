@@ -16,8 +16,6 @@ limitations under the License.
 #include "tensorflow_networking/verbs/rdma_mgr.h"
 #include <fstream>
 #include <vector>
-#include "tensorflow_networking/verbs/grpc_verbs_client.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_util.h"
 #include "tensorflow/core/common_runtime/pool_allocator.h"
@@ -27,6 +25,8 @@ limitations under the License.
 #include "tensorflow/core/framework/allocator_registry.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow_networking/verbs/grpc_verbs_client.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace tensorflow {
 

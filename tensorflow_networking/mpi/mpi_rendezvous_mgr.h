@@ -26,7 +26,6 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/distributed_runtime/request_id.h"

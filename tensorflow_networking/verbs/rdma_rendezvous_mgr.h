@@ -16,10 +16,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_RDMA_RENDEZVOUS_MGR_H_
 #define TENSORFLOW_CONTRIB_VERBS_RDMA_RENDEZVOUS_MGR_H_
 
-#include "tensorflow_networking/verbs/rdma_mgr.h"
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow_networking/verbs/rdma_mgr.h"
 
 namespace tensorflow {
 

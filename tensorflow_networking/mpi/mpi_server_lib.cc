@@ -106,4 +106,3 @@ static MPIServerRegistrar registrar;
 
 }  // namespace
 }  // namespace tensorflow
-

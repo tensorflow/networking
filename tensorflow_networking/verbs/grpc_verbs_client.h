@@ -16,11 +16,11 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_CLIENT_H_
 #define TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_CLIENT_H_
 
-#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace tensorflow {
 

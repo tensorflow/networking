@@ -18,8 +18,8 @@ limitations under the License.
 
 #include <memory>
 
-#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
+#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
 
 namespace tensorflow {
 

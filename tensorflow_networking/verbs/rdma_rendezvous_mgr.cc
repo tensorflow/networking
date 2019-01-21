@@ -15,13 +15,13 @@ limitations under the License.
 
 #include "tensorflow_networking/verbs/rdma_rendezvous_mgr.h"
 #include <unordered_set>
-#include "tensorflow_networking/verbs/verbs_util.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow_networking/verbs/verbs_util.h"
 
 namespace tensorflow {
 

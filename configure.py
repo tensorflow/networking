@@ -93,7 +93,6 @@ def symlink_force(target, link_name):
       raise e
 
 
-
 def write_to_bazelrc(line):
   with open(_TF_BAZELRC, 'a') as f:
     f.write(line + '\n')
@@ -272,7 +271,6 @@ def set_action_env_var(environ_cp,
   environ_cp[var_name] = str(var)
 
 
-
 def get_from_env_or_user_or_default(environ_cp, var_name, ask_for_var,
                                     var_default):
   """Get var_name either from env, or user or default.
@@ -296,8 +294,6 @@ def get_from_env_or_user_or_default(environ_cp, var_name, ask_for_var,
   if not var:
     var = var_default
   return var
-
-
 
 
 def prompt_loop_or_load_from_env(environ_cp,
@@ -474,6 +470,7 @@ def main():
 
   #config_info_line('gdr', 'Build with GDR support.')
   #config_info_line('verbs', 'Build with libverbs support.')
+
 
 if __name__ == '__main__':
   main()

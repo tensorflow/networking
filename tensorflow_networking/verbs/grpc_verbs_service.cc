@@ -17,9 +17,9 @@ limitations under the License.
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/server_builder.h"
 
-#include "tensorflow_networking/verbs/grpc_verbs_service.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
+#include "tensorflow_networking/verbs/grpc_verbs_service.h"
 
 namespace tensorflow {
 

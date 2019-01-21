@@ -11,9 +11,9 @@ load("//tensorflow_networking:repo.bzl", "tensorflow_http_archive")
 
 tensorflow_http_archive(
     name = "org_tensorflow",
-    sha256 = "7b6393db1e7b41f324e6a04693a8fe8cb847eb1bbe0789bbd3f9e0c7789cb67c",
     git_commit = "f64f7f787d3596cb7c9228f131f06c159a0ec188",
     patch = "//third_party:tf-visibility.patch",
+    sha256 = "7b6393db1e7b41f324e6a04693a8fe8cb847eb1bbe0789bbd3f9e0c7789cb67c",
 )
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
@@ -30,4 +30,7 @@ http_archive(
 
 load("@org_tensorflow//tensorflow:workspace.bzl", "tf_workspace")
 
-tf_workspace(path_prefix = "", tf_repo_name = "org_tensorflow")
+tf_workspace(
+    path_prefix = "",
+    tf_repo_name = "org_tensorflow",
+)
