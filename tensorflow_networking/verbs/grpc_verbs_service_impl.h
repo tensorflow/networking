@@ -25,7 +25,7 @@ limitations under the License.
 #include "grpcpp/impl/codegen/stub_options.h"
 #include "grpcpp/impl/codegen/sync_stream.h"
 
-#include "tensorflow/contrib/verbs/verbs_service.pb.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace grpc {
 class CompletionQueue;
@@ -40,7 +40,7 @@ namespace tensorflow {
 namespace grpc {
 
 // Implementation of `tensorflow.VerbsService`, based on the
-// definition in "//tensorflow/contrib/verbs/verbs_service.proto",
+// definition in "//tensorflow_networking/verbs/verbs_service.proto",
 // and the gRPC generated stub and service classes.
 // See the proto file for the definition of methods and messages.
 class VerbsService GRPC_FINAL {

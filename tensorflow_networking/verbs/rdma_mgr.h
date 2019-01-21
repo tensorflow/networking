@@ -21,7 +21,7 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 
-#include "tensorflow/contrib/verbs/rdma.h"
+#include "tensorflow_networking/verbs/rdma.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 

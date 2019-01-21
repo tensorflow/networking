@@ -18,9 +18,9 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_VERBS
 
-#include "tensorflow/contrib/verbs/grpc_verbs_service_impl.h"
-#include "tensorflow/contrib/verbs/rdma_mgr.h"
-#include "tensorflow/contrib/verbs/verbs_service.pb.h"
+#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
+#include "tensorflow_networking/verbs/rdma_mgr.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/lib/core/refcount.h"

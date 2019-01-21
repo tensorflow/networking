@@ -18,7 +18,7 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_VERBS
 
-#include "tensorflow/contrib/verbs/rdma_mgr.h"
+#include "tensorflow_networking/verbs/rdma_mgr.h"
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/platform/macros.h"

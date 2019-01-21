@@ -15,9 +15,9 @@ limitations under the License.
 
 #ifdef TENSORFLOW_USE_VERBS
 
-#include "tensorflow/contrib/verbs/rdma_rendezvous_mgr.h"
+#include "tensorflow_networking/verbs/rdma_rendezvous_mgr.h"
 #include <unordered_set>
-#include "tensorflow/contrib/verbs/verbs_util.h"
+#include "tensorflow_networking/verbs/verbs_util.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"

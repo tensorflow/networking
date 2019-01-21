@@ -2,12 +2,12 @@
 #   Verbs RDMA communication interfaces and implementations for TensorFlow.
 
 package(default_visibility = [
-    "//tensorflow:__subpackages__",
+    "//tensorflow_networking:__subpackages__",
 ])
 
 licenses(["notice"])  # Apache 2.0
 
-load("//tensorflow:tensorflow.bzl", "tf_cuda_library")
+load("@org_tensorflow//tensorflow:tensorflow.bzl", "tf_cuda_library")
 
 exports_files(["LICENSE"])
 
@@ -21,7 +21,7 @@ filegroup(
 
 # For platform specific build config
 load(
-    "//tensorflow/core:platform/default/build_config.bzl",
+    "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
     "tf_proto_library_cc",
 )
 
@@ -31,7 +31,7 @@ tf_proto_library_cc(
     has_services = 1,
     cc_api_version = 2,
     visibility = [
-        "//tensorflow:__subpackages__",
+        "//tensorflow_networking:__subpackages__",
     ],
 )
 
@@ -40,8 +40,8 @@ cc_library(
     srcs = ["verbs_util.cc"],
     hdrs = ["verbs_util.h"],
     deps = [
-        "//tensorflow/core:framework",
-        "//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core:framework",
+        "@org_tensorflow//tensorflow/core:lib",
     ],
 )
 
@@ -53,12 +53,12 @@ cc_library(
         ":grpc_verbs_service_impl",
         ":rdma_mgr",
         ":verbs_service_proto_cc",
-        "//tensorflow:grpc++",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core/distributed_runtime:session_mgr",
-        "//tensorflow/core/distributed_runtime/rpc:async_service_interface",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_call",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_util",
+        "@org_tensorflow//tensorflow:grpc++",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:session_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:async_service_interface",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_call",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_util",
     ],
     alwayslink = 1,
 )
@@ -69,7 +69,7 @@ cc_library(
     hdrs = ["grpc_verbs_service_impl.h"],
     deps = [
         ":verbs_service_proto_cc",
-        "//tensorflow:grpc++",
+        "@org_tensorflow//tensorflow:grpc++",
     ],
 )
 
@@ -80,9 +80,9 @@ cc_library(
     deps = [
         ":grpc_verbs_service_impl",
         ":verbs_service_proto_cc",
-        "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime:call_options",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_util",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:call_options",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_util",
     ],
     alwayslink = 1,
 )
@@ -94,11 +94,10 @@ cc_library(
     deps = [
         ":rdma_mgr",
         ":verbs_util",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:gpu_runtime",
-        "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
-        "//tensorflow/core/distributed_runtime:worker_env",
+        "@org_tensorflow//tensorflow/core",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
     ],
 )
 
@@ -110,13 +109,12 @@ tf_cuda_library(
         ":grpc_verbs_client",
         ":rdma",
         ":verbs_service_proto_cc",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core/distributed_runtime:session_mgr",
-        "//tensorflow/core/distributed_runtime:worker_env",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_channel",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_worker_cache",
+        "@org_tensorflow//tensorflow/core",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:session_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_channel",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_worker_cache",
     ],
 )
 
@@ -124,23 +122,17 @@ tf_cuda_library(
     name = "rdma",
     srcs = ["rdma.cc"],
     hdrs = ["rdma.h"],
-    linkopts = select({
-        "//tensorflow:with_verbs_support": ["-libverbs"],
-        "//conditions:default": [],
-    }),
+    linkopts = ["-libverbs"],
     deps = [
         ":grpc_verbs_client",
         ":verbs_service_proto_cc",
         ":verbs_util",
-        "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:framework_internal",
-        "//tensorflow/core:gpu_runtime",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
-        "//tensorflow/core/distributed_runtime:session_mgr",
-        "//tensorflow/core/distributed_runtime:worker_env",
+        "@org_tensorflow//tensorflow/core",
+        "@org_tensorflow//tensorflow/core:framework",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:session_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
     ],
 )
 
@@ -153,9 +145,9 @@ cc_library(
         ":grpc_verbs_service",
         ":rdma_mgr",
         ":rdma_rendezvous_mgr",
-        "//tensorflow/core:lib",
-        "//tensorflow/core/distributed_runtime:server_lib",
-        "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "@org_tensorflow//tensorflow/core:lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:server_lib",
+        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
     ],
     alwayslink = 1,
 )
