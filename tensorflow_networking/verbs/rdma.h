@@ -25,7 +25,6 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
-#include "tensorflow_networking/verbs/verbs_util.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/framework/rendezvous.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -33,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow_networking/verbs/verbs_util.h"
 
 namespace tensorflow {
 #define PKEY_DEFAULT 0

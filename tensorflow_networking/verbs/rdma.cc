@@ -16,11 +16,11 @@ limitations under the License.
 #include <fcntl.h>
 #include <cstdlib>
 
-#include "tensorflow_networking/verbs/rdma.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow_networking/verbs/rdma.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #if GOOGLE_CUDA
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_util.h"

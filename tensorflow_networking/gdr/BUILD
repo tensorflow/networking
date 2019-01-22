@@ -13,7 +13,6 @@ filegroup(
     ]),
 )
 
-
 # For platform specific build config
 load(
     "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
@@ -34,12 +33,12 @@ cc_library(
     srcs = ["gdr_memory_manager.cc"],
     hdrs = ["gdr_memory_manager.h"],
     linkopts = [
-            "-libverbs",
-            "-lrdmacm",
+        "-libverbs",
+        "-lrdmacm",
     ],
     deps = [
         ":gdr_proto_cc",
-        "@org_tensorflow//tensorflow/core:core",
+        "@org_tensorflow//tensorflow/core",
     ],
 )
 
@@ -49,7 +48,7 @@ cc_library(
     hdrs = ["gdr_worker.h"],
     deps = [
         ":gdr_memory_manager",
-        "@org_tensorflow//tensorflow/core:core",
+        "@org_tensorflow//tensorflow/core",
         "@org_tensorflow//tensorflow/core/distributed_runtime:graph_mgr",
         "@org_tensorflow//tensorflow/core/distributed_runtime:recent_request_ids",
         "@org_tensorflow//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
@@ -69,7 +68,7 @@ cc_library(
     hdrs = ["gdr_rendezvous_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "@org_tensorflow//tensorflow/core:core",
+        "@org_tensorflow//tensorflow/core",
         "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
         "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
         "@org_tensorflow//tensorflow/core/distributed_runtime:tensor_coding",

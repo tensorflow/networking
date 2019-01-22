@@ -16,9 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_VERBS_SERVER_LIB_H_
 #define TENSORFLOW_CONTRIB_VERBS_VERBS_SERVER_LIB_H_
 
+#include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 #include "tensorflow_networking/verbs/grpc_verbs_service.h"
 #include "tensorflow_networking/verbs/rdma_mgr.h"
-#include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 
 namespace tensorflow {
 
