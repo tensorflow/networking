@@ -1,4 +1,5 @@
 .DS_Store
+.Trash
 .ipynb_checkpoints
 node_modules
 /.bazelrc.user
