@@ -21,6 +21,8 @@ limitations under the License.
 
 #include "tensorflow_networking/mpi_collectives/ring.h"
 
+#include "tensorflow/core/util/cuda_launch_config.h"
+
 namespace tensorflow {
 namespace contrib {
 namespace mpi {
