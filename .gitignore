@@ -3,6 +3,7 @@
 node_modules
 /.bazelrc.user
 /.tf_configure.bazelrc
+/.tf_networking_configure.bazelrc
 /bazel-*
 /bazel_pip
 /tools/python_bin_path.sh
@@ -39,3 +40,8 @@ xcuserdata/**
 *.iml
 local.properties
 gradleBuild
+
+# MPI
+third_party/mpi/libmpi.so
+third_party/mpi/mpi.h
+third_party/mpi/mpi_portable_platform.h
