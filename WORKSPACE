@@ -11,12 +11,18 @@ load("//tensorflow_networking:repo.bzl", "tensorflow_http_archive")
 
 tensorflow_http_archive(
     name = "org_tensorflow",
-    git_commit = "50f1ccacc69d9bd228cd7ac351aa0a72a9a594d8",
+    git_commit = "f78b725d10e1386b614621465810b9e79558bd08",
     patch = "//third_party:tf-visibility.patch",
-    sha256 = "bde3de7b32c41106896fc9a1203cdde1f904101da74cebb237e32a200f3f6169",
+    sha256 = "e395b944091fc8370f60852ee053c9d16a8be23aa1decbd5a4ee31761ab4b67a",
 )
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "bazel_skylib",
+    sha256 = "2ef429f5d7ce7111263289644d233707dba35e39696377ebab8b0bc701f7818e",
+    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/0.8.0/bazel-skylib.0.8.0.tar.gz"],
+)  # https://github.com/bazelbuild/bazel-skylib/releases
 
 http_archive(
     name = "io_bazel_rules_closure",
