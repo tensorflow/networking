@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
+
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -25,8 +27,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/gpu/gpu_util.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
 #include "tensorflow/core/distributed_runtime/tensor_coding.h"
-
-#include "tensorflow_networking/mpi/mpi_rendezvous_mgr.h"
+#include "tensorflow/core/framework/allocator.h"
 
 namespace tensorflow {
 
@@ -120,7 +121,7 @@ void MPIRemoteRendezvous::RecvFromRemoteAsync(
         } else {
           TensorResponse tr;
           tr.InitAlloc(dst_device, recv_args.alloc_attrs);
-          tr.InitPartial(mpi_response.response());
+          tr.InitPartial(mpi_response.response(), AllocationAttributes());
           const size_t nBytes = tr.tensor().TotalBytes();
           void* data = const_cast<void*>(DMAHelper::base(&tr.tensor()));
           MPI_Status status;
@@ -156,11 +157,9 @@ void MPIRendezvousMgr::AddRequest(RecvTensorRequest request,
   TF_CHECK_OK(Rendezvous::ParseKey(key, &parsed));
 
   MPIRecvTensorCallBack send_cb = [this, mpi_dst, parsed](
-                                      const Status& status,
-                                      const Rendezvous::Args& send_args,
-                                      const Rendezvous::Args& recv_args,
-                                      const Tensor& val, bool is_dead,
-                                      MPISendTensorCall* mpi_send_call) {
+      const Status& status, const Rendezvous::Args& send_args,
+      const Rendezvous::Args& recv_args, const Tensor& val, bool is_dead,
+      MPISendTensorCall* mpi_send_call) {
     // TODO(jbedorf) this should be a loop over max size
     CHECK(mpi_send_call->mRes_.ByteSize() < INT_MAX)
         << "Buffer too large for single transfer";
@@ -193,78 +192,76 @@ void MPIRendezvousMgr::AddRequest(RecvTensorRequest request,
   };
 
   // Wrapper around the read callback to place the callback on our queue
-  Rendezvous::DoneCallback done_cb =
-      [this, parsed, step_id, send_cb](
-          const Status& status, const Rendezvous::Args& send_args,
-          const Rendezvous::Args& recv_args, const Tensor& val, bool is_dead) {
-        if (!status.ok()) {
-          CHECK(status.ok())
-              << "RecvLocalAsync was not ok, key: " << parsed.FullKey()
-              << " step: " << step_id
-              << " error message: " << status.error_message();
-          return;
-        }
+  Rendezvous::DoneCallback done_cb = [this, parsed, step_id, send_cb](
+      const Status& status, const Rendezvous::Args& send_args,
+      const Rendezvous::Args& recv_args, const Tensor& val, bool is_dead) {
+    if (!status.ok()) {
+      CHECK(status.ok()) << "RecvLocalAsync was not ok, key: "
+                         << parsed.FullKey() << " step: " << step_id
+                         << " error message: " << status.error_message();
+      return;
+    }
 
-        VLOG(3) << "MPI Sending tensor " << parsed.FullKey()
-                << " @ step: " << step_id << std::endl;
+    VLOG(3) << "MPI Sending tensor " << parsed.FullKey()
+            << " @ step: " << step_id << std::endl;
 
-        auto mpi_send_call = new MPISendTensorCall();
-        mpi_send_call->Init(parsed, step_id, is_dead);
+    auto mpi_send_call = new MPISendTensorCall();
+    mpi_send_call->Init(parsed, step_id, is_dead);
 
-        Device* src_dev = nullptr;
-        Status s = this->worker_env_2->device_mgr->LookupDevice(
-            parsed.src_device, &src_dev);
-        CHECK(s.ok()) << "src device not found";
+    Device* src_dev = nullptr;
+    Status s = this->worker_env_2->device_mgr->LookupDevice(parsed.src_device,
+                                                            &src_dev);
+    CHECK(s.ok()) << "src device not found";
 
-        // Control if shape and data should be send together or if we can
-        // optimize it in two different transfers, thereby reducing memory
-        // copies
-        bool doOptimalTransfer = true;
-        if (!DataTypeCanUseMemcpy(val.dtype())) doOptimalTransfer = false;
-        if (val.TotalBytes() < 1024) doOptimalTransfer = false;
+    // Control if shape and data should be send together or if we can
+    // optimize it in two different transfers, thereby reducing memory
+    // copies
+    bool doOptimalTransfer = true;
+    if (!DataTypeCanUseMemcpy(val.dtype())) doOptimalTransfer = false;
+    if (val.TotalBytes() < 1024) doOptimalTransfer = false;
 
-        doOptimalTransfer = doOptimalTransfer && use_optimal_transfer_;
+    doOptimalTransfer = doOptimalTransfer && use_optimal_transfer_;
 
-        if (doOptimalTransfer) {
-          // First send the Tensor description and in a follow up transfer the
-          // data
-          mpi_send_call->mRes_.mutable_response()->mutable_tensor()->set_dtype(
-              val.dtype());
-          val.shape().AsProto(mpi_send_call->mRes_.mutable_response()
-                                  ->mutable_tensor()
-                                  ->mutable_tensor_shape());
-          mpi_send_call->mRes_.set_singlesend(false);
-        } else {
-          // Send the Tensor description and data in a single transfer
-          if (src_dev->tensorflow_gpu_device_info() &&
-              (!send_args.alloc_attrs.on_host())) {
-            Notification n;
-            GPUUtil::SetProtoFromGPU(
-                val, src_dev, send_args.device_context,
-                mpi_send_call->mRes_.mutable_response()->mutable_tensor(),
-                is_dead, [&n, &s](const Status& s_) {
-                  s = s_;
-                  n.Notify();
-                });
-            n.WaitForNotification();
-          } else {
-            val.AsProtoTensorContent(
-                mpi_send_call->mRes_.mutable_response()->mutable_tensor());
-          }
-        }
+    if (doOptimalTransfer) {
+      // First send the Tensor description and in a follow up transfer the
+      // data
+      mpi_send_call->mRes_.mutable_response()->mutable_tensor()->set_dtype(
+          val.dtype());
+      val.shape().AsProto(mpi_send_call->mRes_.mutable_response()
+                              ->mutable_tensor()
+                              ->mutable_tensor_shape());
+      mpi_send_call->mRes_.set_singlesend(false);
+    } else {
+      // Send the Tensor description and data in a single transfer
+      if (src_dev->tensorflow_gpu_device_info() &&
+          (!send_args.alloc_attrs.on_host())) {
+        Notification n;
+        GPUUtil::SetProtoFromGPU(
+            val, src_dev, send_args.device_context,
+            mpi_send_call->mRes_.mutable_response()->mutable_tensor(), is_dead,
+            [&n, &s](const Status& s_) {
+              s = s_;
+              n.Notify();
+            });
+        n.WaitForNotification();
+      } else {
+        val.AsProtoTensorContent(
+            mpi_send_call->mRes_.mutable_response()->mutable_tensor());
+      }
+    }
 
-        std::function<MPISendTensorCall*()> res = std::bind(
-            send_cb, status, send_args, recv_args, val, is_dead, mpi_send_call);
+    std::function<MPISendTensorCall*()> res = std::bind(
+        send_cb, status, send_args, recv_args, val, is_dead, mpi_send_call);
 
-        SendQueueEntry req(string(parsed.FullKey()), std::move(res));
+    SendQueueEntry req(string(parsed.FullKey()), std::move(res));
 
-        this->QueueSendRequest(req);
+    this->QueueSendRequest(req);
 
-        // Wait for the notification that indicates the tensor has been
-        // successfully transmitted to the remote process. Only needed if we
-        // have not parsed the tensor to proto
-        if (doOptimalTransfer) mpi_send_call->n_.WaitForNotification();
-      };  // done_cb
+    // Wait for the notification that indicates the tensor has been
+    // successfully transmitted to the remote process. Only needed if we
+    // have not parsed the tensor to proto
+    if (doOptimalTransfer) mpi_send_call->n_.WaitForNotification();
+  };  // done_cb
 
   worker_env_2->compute_pool->Schedule([this, step_id, parsed, done_cb]() {
     this->RecvLocalAsync(step_id, parsed, done_cb);

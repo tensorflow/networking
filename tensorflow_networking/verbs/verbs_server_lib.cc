@@ -49,8 +49,8 @@ VerbsServer::~VerbsServer() {
 Status VerbsServer::ChannelCacheFactory(const ServerDef& server_def,
                                         GrpcChannelCache** channel_cache) {
   string name_prefix =
-      strings::StrCat("/job:", server_def.job_name(), "/replica:0",
-                      "/task:", server_def.task_index());
+      strings::StrCat("/job:", server_def.job_name(), "/replica:0", "/task:",
+                      server_def.task_index());
 
   GrpcChannelSpec channel_spec;
   TF_RETURN_IF_ERROR(ParseChannelSpec(server_def, &channel_spec));
@@ -79,7 +79,11 @@ Status VerbsServer::ChannelCacheFactory(const ServerDef& server_def,
 Status VerbsServer::Init(ServiceInitFunction service_func,
                          RendezvousMgrCreationFunction rendezvous_mgr_func) {
   std::call_once(reg_mem_visitors_call, []() { RdmaMgr::RegMemVisitors(); });
-  Status s = GrpcServer::Init(service_func, rendezvous_mgr_func);
+
+  GrpcServerOptions opts;
+  opts.service_func = service_func;
+  opts.rendezvous_mgr_func = rendezvous_mgr_func;
+  Status s = GrpcServer::Init(opts);
   {
     mutex_lock l(mu_);
     CHECK_EQ(verbs_state_, DISCONNECTED);
