@@ -16,18 +16,16 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_SERVICE_H_
 #define TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_SERVICE_H_
 
+#include "grpcpp/alarm.h"
+#include "grpcpp/grpcpp.h"
+#include "grpcpp/server_builder.h"
+
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
 #include "tensorflow_networking/verbs/rdma_mgr.h"
 #include "tensorflow_networking/verbs/verbs_service.pb.h"
-
-namespace grpc {
-class ServerBuilder;
-class ServerCompletionQueue;
-class Alarm;
-}  // namespace grpc
 
 namespace tensorflow {
 

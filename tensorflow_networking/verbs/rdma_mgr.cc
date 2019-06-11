@@ -236,9 +236,8 @@ int TryToReadNumaNode(ibv_device* device) {
   if (strings::safe_strto32(content, &value)) {
     if (value < 0) {
       LOG(INFO) << "Successful NUMA node read from SysFS had negative value ("
-                << value
-                << "), but there must be at least one NUMA node"
-                   ", so returning NUMA node zero";
+                << value << "), but there must be at least one NUMA node"
+                            ", so returning NUMA node zero";
       return 0;
     }
     LOG(INFO) << "NUMA node for device: " << device->name << " is " << value;
@@ -275,8 +274,8 @@ void RdmaMgr::InitAllocators() {
   ProcessState::singleton()->AddCPUFreeVisitor(free_visitor);
 
 #if GOOGLE_CUDA
-  GPUProcessState::singleton()->AddCUDAHostAllocVisitor(0, alloc_visitor);
-  GPUProcessState::singleton()->AddCUDAHostFreeVisitor(0, free_visitor);
+  GPUProcessState::singleton()->AddGpuHostAllocVisitor(0, alloc_visitor);
+  GPUProcessState::singleton()->AddGpuHostFreeVisitor(0, free_visitor);
 
   if (IsGDRAvailable()) {
     // Note we don't free allocated GPU memory so there is no free visitor

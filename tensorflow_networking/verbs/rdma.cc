@@ -537,7 +537,7 @@ int RdmaChannel::PingPostRecv() {
 int RdmaChannel::PingPostSend() {
   struct ibv_send_wr wr, *bad_wr;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = (uint64_t)this;
+  wr.wr_id = (uint64_t) this;
   wr.sg_list = &ping_sge_list_;
   wr.num_sge = 1;
   wr.opcode = IBV_WR_SEND;
@@ -657,7 +657,7 @@ void RdmaChannel::SetRemoteAddress(const RdmaAddress& ra, bool override) {
 void RdmaChannel::Recv() {
   struct ibv_recv_wr wr;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = (uint64_t)this;
+  wr.wr_id = (uint64_t) this;
   struct ibv_recv_wr* bad_wr;
   CHECK(!ibv_post_recv(qp_, &wr, &bad_wr)) << "Failed to post recv";
 }
@@ -728,11 +728,11 @@ void RdmaChannel::Connect(const RdmaAddress& remoteAddr) {
     attr.ah_attr.grh.traffic_class = adapter_->params_.traffic_class;
 
     int r;
-    CHECK(!(r = ibv_modify_qp(qp_, &attr,
-                              IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                                  IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                                  IBV_QP_MAX_DEST_RD_ATOMIC |
-                                  IBV_QP_MIN_RNR_TIMER)))
+    CHECK(!(r = ibv_modify_qp(qp_, &attr, IBV_QP_STATE | IBV_QP_AV |
+                                              IBV_QP_PATH_MTU |
+                                              IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                              IBV_QP_MAX_DEST_RD_ATOMIC |
+                                              IBV_QP_MIN_RNR_TIMER)))
         << "QP to Ready to Receive " << r;
 
     memset(&attr, 0, sizeof(ibv_qp_attr));
@@ -743,10 +743,10 @@ void RdmaChannel::Connect(const RdmaAddress& remoteAddr) {
     attr.rnr_retry = 7; /* infinite */
     attr.max_rd_atomic = 1;
 
-    CHECK(!(r = ibv_modify_qp(qp_, &attr,
-                              IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-                                  IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
-                                  IBV_QP_MAX_QP_RD_ATOMIC)))
+    CHECK(!(r = ibv_modify_qp(qp_, &attr, IBV_QP_STATE | IBV_QP_TIMEOUT |
+                                              IBV_QP_RETRY_CNT |
+                                              IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
+                                              IBV_QP_MAX_QP_RD_ATOMIC)))
         << "QP to Ready to Send " << r;
 
     connected_ = true;
@@ -1084,7 +1084,7 @@ void RdmaTensorResponse::RecvHandler(Rendezvous::ParsedKey parsed,
       // The tensor must be copied from GPU to CPU, because either:
       // 1. The tensor is located on a non GDR compatible GPU.
       // 2. The tensor's meta-data has changed.
-      Allocator* alloc = GPUProcessState::singleton()->GetCUDAHostAllocator(0);
+      Allocator* alloc = GPUProcessState::singleton()->GetGpuHostAllocator(0);
       copy = Tensor(alloc, in.dtype(), in.shape());
       CountCopies(rm_.name_, (void*)DMAHelper::base(&in),
                   (void*)DMAHelper::base(&copy), in.TotalBytes(), true);
@@ -1322,7 +1322,7 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
     memcpy(&message[kTensorBytesStartIndex], &rm.tensor_bytes_,
            sizeof(rm.tensor_bytes_));
   }
-  // checksum
+// checksum
 #ifdef RDMA_DATA_VALIDATION
   memcpy(&message[kChecksumStartIndex], &rm.checksum_, sizeof(rm.checksum_));
 #endif
@@ -1384,7 +1384,7 @@ void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
     memcpy(&rm.tensor_bytes_, &message[kTensorBytesStartIndex],
            sizeof(rm.tensor_bytes_));
   }
-  // checksum
+// checksum
 #ifdef RDMA_DATA_VALIDATION
   memcpy(&rm.checksum_, &message[kChecksumStartIndex], sizeof(rm.checksum_));
 #endif
@@ -1541,7 +1541,7 @@ bool RdmaTensorRequest::AllocateTensors() {
     if (mr_ == nullptr) {
       // Can't RDMA directly to result. Use a proxy.
       proxy_tensor_ =
-          new Tensor(GPUProcessState::singleton()->GetCUDAHostAllocator(0),
+          new Tensor(GPUProcessState::singleton()->GetGpuHostAllocator(0),
                      result_tensor_->dtype(), result_tensor_->shape());
       rdma_addr_ = DMAHelper::base(proxy_tensor_);
       mr_ =
@@ -1632,7 +1632,8 @@ void RdmaTensorRequest::RecvTensorContent() {
                                 [this](const Status& s) {
                                   CHECK(s.ok()) << "copy tensor to gpu sync";
                                   Done(s);
-                                });
+                                },
+                                true /*sync_dst_compute*/);
     return;
   }
 #endif

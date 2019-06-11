@@ -79,14 +79,33 @@ cc_library(
 )
 
 cc_library(
+    name = "gdr_collective_executor_mgr",
+    srcs = ["gdr_collective_executor_mgr.cc"],
+    hdrs = ["gdr_collective_executor_mgr.h"],
+    deps = [
+        ":gdr_memory_manager",
+        "@org_tensorflow//tensorflow/core:core",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:cancellable_call",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:collective_param_resolver_distributed",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:device_resolver_distributed",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:rpc_collective_executor_mgr",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
+    ],
+)
+
+cc_library(
     name = "gdr_server_lib",
     srcs = ["gdr_server_lib.cc"],
     hdrs = ["gdr_server_lib.h"],
     linkstatic = 1,  # Seems to be needed since alwayslink is broken in bazel
     deps = [
+        ":gdr_collective_executor_mgr",
         ":gdr_memory_manager",
         ":gdr_rendezvous_mgr",
         ":gdr_worker",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:collective_param_resolver_distributed",
+        "@org_tensorflow//tensorflow/core/distributed_runtime:device_resolver_distributed",
         "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
     ],
     alwayslink = 1,

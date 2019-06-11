@@ -73,7 +73,7 @@ RUN ${PIP} --no-cache-dir install \
 RUN apt-get install -y mpich            # Test using the MPICH library
 
 # Install bazel
-ARG BAZEL_VERSION=0.19.2
+ARG BAZEL_VERSION=0.24.1
 RUN mkdir /bazel && \
     wget -O /bazel/installer.sh "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh" && \
     wget -O /bazel/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazel/master/LICENSE" && \
