@@ -1,7 +1,12 @@
 # Description:
 #   GPU Direct RDMA Out-of-Band Tensor transport for TensorFlow.
 
-licenses(["notice"])  # Apache 2.0
+package(
+    default_visibility = [
+        "//tensorflow:__subpackages__",
+    ],
+    licenses = ["notice"],  # Apache 2.0
+)
 
 exports_files(["LICENSE"])
 
@@ -13,19 +18,15 @@ filegroup(
     ]),
 )
 
-# For platform specific build config
-load(
-    "@org_tensorflow//tensorflow/core:platform/default/build_config.bzl",
-    "tf_proto_library_cc",
-)
-
-tf_proto_library_cc(
+proto_library(
     name = "gdr_proto",
     srcs = ["gdr.proto"],
-    cc_api_version = 2,
-    visibility = [
-        "//tensorflow_networking:__subpackages__",
-    ],
+    deps = ["@com_google_protobuf//:any_proto"],
+)
+
+cc_proto_library(
+    name = "gdr_proto_cc",
+    deps = [":gdr_proto"],
 )
 
 cc_library(
@@ -38,7 +39,8 @@ cc_library(
     ],
     deps = [
         ":gdr_proto_cc",
-        "@org_tensorflow//tensorflow/core",
+        "@local_config_tf//:libtensorflow_framework",
+        "@local_config_tf//:tf_header_lib",
     ],
 )
 
@@ -48,17 +50,8 @@ cc_library(
     hdrs = ["gdr_worker.h"],
     deps = [
         ":gdr_memory_manager",
-        "@org_tensorflow//tensorflow/core",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:graph_mgr",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:recent_request_ids",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:rendezvous_mgr_interface",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_session",
-        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_call",
-        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_tensor_coding",
-        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_util",
-        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_worker_service",
+        "@local_config_tf//:libtensorflow_framework",
+        "@local_config_tf//:tf_header_lib",
     ],
 )
 
@@ -68,13 +61,8 @@ cc_library(
     hdrs = ["gdr_rendezvous_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "@org_tensorflow//tensorflow/core",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:base_rendezvous_mgr",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:tensor_coding",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_env",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_interface",
+        "@local_config_tf//:libtensorflow_framework",
+        "@local_config_tf//:tf_header_lib",
     ],
 )
 
@@ -84,13 +72,8 @@ cc_library(
     hdrs = ["gdr_collective_executor_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "@org_tensorflow//tensorflow/core:core",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:cancellable_call",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:collective_param_resolver_distributed",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:device_resolver_distributed",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:request_id",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:rpc_collective_executor_mgr",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:worker_cache",
+        "@local_config_tf//:libtensorflow_framework",
+        "@local_config_tf//:tf_header_lib",
     ],
 )
 
@@ -104,9 +87,8 @@ cc_library(
         ":gdr_memory_manager",
         ":gdr_rendezvous_mgr",
         ":gdr_worker",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:collective_param_resolver_distributed",
-        "@org_tensorflow//tensorflow/core/distributed_runtime:device_resolver_distributed",
-        "@org_tensorflow//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "@local_config_tf//:libtensorflow_framework",
+        "@local_config_tf//:tf_header_lib",
     ],
     alwayslink = 1,
 )

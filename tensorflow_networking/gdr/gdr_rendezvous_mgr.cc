@@ -141,7 +141,7 @@ class GdrRemoteRendezvous : public BaseRemoteRendezvous {
     }
 
     WorkerSession* sess = session();
-    WorkerInterface* rwi = sess->worker_cache->CreateWorker(src_worker);
+    WorkerInterface* rwi = sess->worker_cache()->GetOrCreateWorker(src_worker);
     if (rwi == nullptr) {
       Status s = errors::Internal("No worker known as ", src_worker);
       done(s, Args(), recv_args, Tensor{}, false);
@@ -151,7 +151,7 @@ class GdrRemoteRendezvous : public BaseRemoteRendezvous {
     Device* dst_device;
     Status s = sess->device_mgr()->LookupDevice(parsed.dst_device, &dst_device);
     if (!s.ok()) {
-      sess->worker_cache->ReleaseWorker(src_worker, rwi);
+      sess->worker_cache()->ReleaseWorker(src_worker, rwi);
       done(s, Args(), recv_args, Tensor{}, false);
       return;
     }
@@ -162,11 +162,11 @@ class GdrRemoteRendezvous : public BaseRemoteRendezvous {
                               recv_args, step_id_, parsed.FullKey());
 
     // Record "call" in active_ so that it can be aborted cleanly.
-    RegisterCall(call);
+    RegisterCall(call, recv_args);
 
     // RendezvousMgr already aborted, shouldn't send RPC call any more
     if (!call->status().ok()) {
-      session()->worker_cache->ReleaseWorker(src_worker, rwi);
+      session()->worker_cache()->ReleaseWorker(src_worker, rwi);
       done(call->status(), Args(), Args(), Tensor(), false);
       delete call;
       return;
@@ -180,7 +180,7 @@ class GdrRemoteRendezvous : public BaseRemoteRendezvous {
       // If StartAbort was called prior to DeregisterCall, then the
       // current status should be bad.
       Status s = call->status();
-      session()->worker_cache->ReleaseWorker(src_worker, rwi);
+      session()->worker_cache()->ReleaseWorker(src_worker, rwi);
       done(s, Args(), call->recv_args(), call->tensor(), call->is_dead());
       delete call;
       Unref();
