@@ -1,5 +1,7 @@
 """tensorflow_networking"""
 
+import os
 import tensorflow as tf
 
-tf.load_library('libtensorflow_networking.so')
+dirname = os.path.dirname(__file__)
+tf.load_library(os.path.join(dirname, 'libtensorflow_networking.so'))
