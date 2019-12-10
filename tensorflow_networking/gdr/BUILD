@@ -39,7 +39,6 @@ cc_library(
     ],
     deps = [
         ":gdr_proto_cc",
-        "@local_config_tf//:libtensorflow_framework",
         "@local_config_tf//:tf_header_lib",
     ],
 )
@@ -50,7 +49,6 @@ cc_library(
     hdrs = ["gdr_worker.h"],
     deps = [
         ":gdr_memory_manager",
-        "@local_config_tf//:libtensorflow_framework",
         "@local_config_tf//:tf_header_lib",
     ],
 )
@@ -61,7 +59,6 @@ cc_library(
     hdrs = ["gdr_rendezvous_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "@local_config_tf//:libtensorflow_framework",
         "@local_config_tf//:tf_header_lib",
     ],
 )
@@ -72,7 +69,6 @@ cc_library(
     hdrs = ["gdr_collective_executor_mgr.h"],
     deps = [
         ":gdr_memory_manager",
-        "@local_config_tf//:libtensorflow_framework",
         "@local_config_tf//:tf_header_lib",
     ],
 )
@@ -82,12 +78,14 @@ cc_library(
     srcs = ["gdr_server_lib.cc"],
     hdrs = ["gdr_server_lib.h"],
     linkstatic = 1,  # Seems to be needed since alwayslink is broken in bazel
+    visibility = [
+        "//tensorflow_networking:__subpackages__",
+    ],
     deps = [
         ":gdr_collective_executor_mgr",
         ":gdr_memory_manager",
         ":gdr_rendezvous_mgr",
         ":gdr_worker",
-        "@local_config_tf//:libtensorflow_framework",
         "@local_config_tf//:tf_header_lib",
     ],
     alwayslink = 1,

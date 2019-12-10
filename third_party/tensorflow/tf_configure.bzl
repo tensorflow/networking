@@ -216,11 +216,21 @@ def _tf_pip_impl(repository_ctx):
         ["_pywrap_tensorflow_internal.lib" if _is_windows(repository_ctx) else "libtensorflow_framework.so"],
     )
 
+    tf_pywrap_internal_library_rule = _symlink_genrule_for_dir(
+        repository_ctx,
+        None,
+        "",
+        "_pywrap_tensorflow_internal.so",
+        ["%s/python/_pywrap_tensorflow_internal.so" % tf_shared_library_dir],
+        ["lib_pywrap_tensorflow_internal.so"],
+    )
+
     _tpl(repository_ctx, "BUILD", {
         "%{FARMHASH_HEADER_GENRULE}": farmhash_header_rule,
         "%{GRPC_HEADER_GENRULE}": grpc_header_rule,
         "%{TF_HEADER_GENRULE}": tf_header_rule,
         "%{TF_SHARED_LIBRARY_GENRULE}": tf_shared_library_rule,
+        "%{TF_PYWRAP_INTERNAL_LIBRARY_GENRULE}": tf_pywrap_internal_library_rule,
     })
 
 tf_configure = repository_rule(

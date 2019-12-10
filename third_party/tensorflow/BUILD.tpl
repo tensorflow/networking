@@ -28,7 +28,13 @@ cc_library(
 cc_library(
     name = "libtensorflow_framework",
     srcs = [":libtensorflow_framework.so"],
-    #data = ["lib/libtensorflow_framework.so"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "_pywrap_tensorflow_internal",
+    srcs = [":_pywrap_tensorflow_internal.so"],
+    deps = [":libtensorflow_framework"],
     visibility = ["//visibility:public"],
 )
 
@@ -36,3 +42,4 @@ cc_library(
 %{GRPC_HEADER_GENRULE}
 %{TF_HEADER_GENRULE}
 %{TF_SHARED_LIBRARY_GENRULE}
+%{TF_PYWRAP_INTERNAL_LIBRARY_GENRULE}
