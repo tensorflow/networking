@@ -22,4 +22,7 @@ RUN curl -L -O "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VE
 ADD . /tf_networking
 RUN cd /tf_networking && \
     python3 third_party/tensorflow/configure.py && \
-    bazel build -c opt //tensorflow_networking/gdr:gdr_server_lib
+    bazel build -c opt //tensorflow_networking:libtensorflow_networking.so && \
+    cp bazel-bin/tensorflow_networking/libtensorflow_networking.so tensorflow_networking && \
+    python3 setup.py bdist_wheel && \
+    pip3 install dist/*.whl
