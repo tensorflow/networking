@@ -1,83 +1,28 @@
-ARG UBUNTU_VERSION=16.04
+FROM tensorflow/tensorflow:nightly-py3
 
-FROM ubuntu:${UBUNTU_VERSION} AS base
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        git \
-        libcurl3-dev \
-        libfreetype6-dev \
-        libhdf5-serial-dev \
-        libpng12-dev \
-        libzmq3-dev \
-        pkg-config \
-        rsync \
-        software-properties-common \
-        unzip \
-        zip \
-        zlib1g-dev \
-        openjdk-8-jdk \
-        openjdk-8-jre-headless \
+RUN apt-get update && \
+    apt-get install -yq --no-install-recommends \
+        g++ \
         libibverbs-dev \
         librdmacm-dev \
+        openjdk-8-jdk \
+        unzip \
+        zip \
         && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV CI_BUILD_PYTHON python
-
-ARG USE_PYTHON_3_NOT_2
-ARG _PY_SUFFIX=${USE_PYTHON_3_NOT_2:+3}
-ARG PYTHON=python${_PY_SUFFIX}
-ARG PIP=pip${_PY_SUFFIX}
-
-# See http://bugs.python.org/issue19846
-ENV LANG C.UTF-8
-
-RUN apt-get update && apt-get install -y \
-    ${PYTHON} \
-    ${PYTHON}-pip
-
-RUN ${PIP} --no-cache-dir install --upgrade \
-    pip \
-    setuptools
-
-# Some TF tools expect a "python" binary
-RUN ln -s $(which ${PYTHON}) /usr/local/bin/python 
-
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    wget \
-    openjdk-8-jdk \
-    ${PYTHON}-dev \
-    swig
-
-RUN ${PIP} --no-cache-dir install \
-    Pillow \
-    h5py \
-    keras_applications \
-    keras_preprocessing \
-    matplotlib \
-    mock \
-    numpy \
-    scipy \
-    sklearn \
-    pandas \
-    && test "${USE_PYTHON_3_NOT_2}" -eq 1 && true || ${PIP} --no-cache-dir install \
-    enum34
+    rm -rf '/var/lib/apt/lists/*'
 
 # Install bazel
-ARG BAZEL_VERSION=0.24.1
-RUN mkdir /bazel && \
-    wget -O /bazel/installer.sh "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh" && \
-    wget -O /bazel/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazel/master/LICENSE" && \
-    chmod +x /bazel/installer.sh && \
-    /bazel/installer.sh && \
-    rm -f /bazel/installer.sh
+ARG BAZEL_VERSION=1.1.0
+ARG BAZEL_INSTALLER="bazel-${BAZEL_VERSION}-installer-linux-x86_64.sh"
+RUN curl -L -O "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/${BAZEL_INSTALLER}" && \
+    chmod +x ${BAZEL_INSTALLER} && \
+    ./${BAZEL_INSTALLER} && \
+    rm ${BAZEL_INSTALLER}
 
 ADD . /tf_networking
-WORKDIR /tf_networking
-RUN bazel build -c opt //tensorflow_networking/gdr:gdr_server_lib
+RUN cd /tf_networking && \
+    python3 third_party/tensorflow/configure.py && \
+    bazel build -c opt //tensorflow_networking:libtensorflow_networking.so && \
+    cp bazel-bin/tensorflow_networking/libtensorflow_networking.so tensorflow_networking && \
+    python3 setup.py bdist_wheel && \
+    pip3 install dist/*.whl

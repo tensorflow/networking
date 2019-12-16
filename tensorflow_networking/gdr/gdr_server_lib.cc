@@ -19,10 +19,10 @@ limitations under the License.
 #include "tensorflow_networking/gdr/gdr_rendezvous_mgr.h"
 #include "tensorflow_networking/gdr/gdr_worker.h"
 
-#include "grpc/support/alloc.h"
 #include "tensorflow/core/common_runtime/collective_rma_local.h"
 #include "tensorflow/core/distributed_runtime/collective_param_resolver_distributed.h"
 #include "tensorflow/core/distributed_runtime/device_resolver_distributed.h"
+#include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 
@@ -59,26 +59,27 @@ Status GdrServer::Init() {
     return std::unique_ptr<GdrWorker>(
         new GdrWorker(env, config, remote_memory_manager_.get()));
   };
-  CollectiveMgrCreationFunction collective_mgr_func = [this](
-      const ConfigProto& config, const WorkerEnv* env,
-      WorkerCacheInterface* worker_cache) {
-    string unused;
-    string default_worker_name;
-    DeviceNameUtils::SplitDeviceName(env->device_mgr->ListDevices()[0]->name(),
-                                     &default_worker_name, &unused);
+  CollectiveMgrCreationFunction collective_mgr_func =
+      [this](const ConfigProto& config, const WorkerEnv* env,
+             WorkerCacheInterface* worker_cache) {
+        string unused;
+        string default_worker_name;
+        DeviceNameUtils::SplitDeviceName(
+            env->device_mgr->ListDevices()[0]->name(), &default_worker_name,
+            &unused);
 
-    std::unique_ptr<DeviceResolverDistributed> dev_resolver(
-        new DeviceResolverDistributed(env->device_mgr, worker_cache,
-                                      default_worker_name));
-    std::unique_ptr<CollectiveParamResolverDistributed> param_resolver(
-        new CollectiveParamResolverDistributed(config, env->device_mgr,
-                                               dev_resolver.get(), worker_cache,
-                                               default_worker_name));
-    return new GdrCollectiveExecutorMgr(
-        config, env->device_mgr, std::move(dev_resolver),
-        std::move(param_resolver), worker_cache, default_worker_name,
-        remote_memory_manager_.get());
-  };
+        std::unique_ptr<DeviceResolverDistributed> dev_resolver(
+            new DeviceResolverDistributed(env->device_mgr, worker_cache,
+                                          default_worker_name));
+        std::unique_ptr<CollectiveParamResolverDistributed> param_resolver(
+            new CollectiveParamResolverDistributed(
+                config, env->device_mgr, dev_resolver.get(), worker_cache,
+                default_worker_name));
+        return new GdrCollectiveExecutorMgr(
+            config, env->device_mgr, std::move(dev_resolver),
+            std::move(param_resolver), worker_cache, default_worker_name,
+            remote_memory_manager_.get());
+      };
   TF_RETURN_IF_ERROR(remote_memory_manager_->Init());
 
   GrpcServerOptions opts;
@@ -139,13 +140,8 @@ class GdrServerFactory : public ServerFactory {
 class GdrServerRegistrar {
  public:
   GdrServerRegistrar() {
-    gpr_allocation_functions alloc_fns;
-    memset(&alloc_fns, 0, sizeof(alloc_fns));
-    alloc_fns.malloc_fn = port::Malloc;
-    alloc_fns.realloc_fn = port::Realloc;
-    alloc_fns.free_fn = port::Free;
-    gpr_set_allocation_functions(alloc_fns);
     ServerFactory::Register("GDR_SERVER", new GdrServerFactory());
+    LOG(INFO) << "Registered grpc+gdr server protocol";
   }
 };
 static GdrServerRegistrar registrar;
