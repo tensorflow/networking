@@ -112,7 +112,7 @@ class GdrRecvTensorCall : public BaseRecvTensorCall {
   Rendezvous::Args recv_args_;
 
   mutable mutex mu_;
-  Status status_ GUARDED_BY(mu_);
+  Status status_ TF_GUARDED_BY(mu_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(GdrRecvTensorCall);
 };

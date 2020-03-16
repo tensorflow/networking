@@ -15,15 +15,15 @@ limitations under the License.
 
 #include "tensorflow_networking/gdr/gdr_memory_manager.h"
 
+#include <fcntl.h>
+#include <rdma/rdma_cma.h>
+#include <rdma/rdma_verbs.h>
+
 #include <atomic>
 #include <cerrno>
 #include <fstream>
 #include <list>
 #include <map>
-
-#include <fcntl.h>
-#include <rdma/rdma_cma.h>
-#include <rdma/rdma_verbs.h>
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
@@ -34,7 +34,6 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/numa.h"
-
 #include "tensorflow_networking/gdr/gdr.pb.h"
 
 namespace tensorflow {
@@ -155,21 +154,22 @@ class GdrMemoryManager : public RemoteMemoryManager {
 
   // Server side on-the-fly tensor buffers
   mutex buf_mu_;
-  std::map<TensorKey, const TensorBuffer*> tensor_buffers_ GUARDED_BY(buf_mu_);
+  std::map<TensorKey, const TensorBuffer*> tensor_buffers_
+      TF_GUARDED_BY(buf_mu_);
 
   // Client side endpoints
   mutex client_mu_;
   std::map<std::pair<string, string>, RdmaEndpointPtr> clients_
-      GUARDED_BY(client_mu_);
+      TF_GUARDED_BY(client_mu_);
 
   // Client side callbacks
   mutex callback_mu_;
   std::map<TensorKey, StatusCallback> tensor_callbacks_
-      GUARDED_BY(callback_mu_);
+      TF_GUARDED_BY(callback_mu_);
 
   // Managed memory regions
   mutex alloc_mu_;
-  std::vector<MemoryRegionPtr> mrs_ GUARDED_BY(alloc_mu_);
+  std::vector<MemoryRegionPtr> mrs_ TF_GUARDED_BY(alloc_mu_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(GdrMemoryManager);
 };

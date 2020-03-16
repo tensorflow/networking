@@ -51,10 +51,10 @@ class VerbsServer : public GrpcServer {
   mutex mu_;
 
   enum State { DISCONNECTED, CONNECTED };
-  State verbs_state_ GUARDED_BY(mu_);
+  State verbs_state_ TF_GUARDED_BY(mu_);
 
   GrpcVerbsService* verbs_service_ = nullptr;
-  std::unique_ptr<Thread> verbs_thread_ GUARDED_BY(mu_);
+  std::unique_ptr<Thread> verbs_thread_ TF_GUARDED_BY(mu_);
   GrpcChannelCache* channel_cache_ = nullptr;
 };
 

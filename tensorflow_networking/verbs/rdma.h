@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CONTRIB_VERBS_RDMA_H_
 
 #include <infiniband/verbs.h>
+
 #include <cstring>  // for memset
 #include <functional>
 #include <memory>  // for shared_ptr
@@ -224,7 +225,7 @@ class RdmaMemoryMgr {
 
   // Managed memory regions
   mutex mrs_mu_;
-  std::vector<MemoryRegionPtr> mrs_ GUARDED_BY(mrs_mu_);
+  std::vector<MemoryRegionPtr> mrs_ TF_GUARDED_BY(mrs_mu_);
 };
 
 // RdmaTensorRequest
@@ -456,16 +457,16 @@ class RdmaChannel {
   string remote_name_;
   ibv_qp* qp_;
   mutex mu_;
-  bool connected_ GUARDED_BY(mu_) = false;
-  RdmaAddress remote_ GUARDED_BY(mu_);
-  bool remote_set_ GUARDED_BY(mu_) = false;
+  bool connected_ TF_GUARDED_BY(mu_) = false;
+  RdmaAddress remote_ TF_GUARDED_BY(mu_);
+  bool remote_set_ TF_GUARDED_BY(mu_) = false;
   mutex ct_mu_;
   typedef std::unordered_map<uint32_t, RdmaTensorRequest> RequestTable;
-  RequestTable request_table_ GUARDED_BY(ct_mu_);
-  uint32_t request_serial_ GUARDED_BY(ct_mu_);
+  RequestTable request_table_ TF_GUARDED_BY(ct_mu_);
+  uint32_t request_serial_ TF_GUARDED_BY(ct_mu_);
   mutex responses_mu_;
   typedef std::unordered_map<uint32_t, RdmaTensorResponse> ResponsesTable;
-  ResponsesTable responses_table_ GUARDED_BY(responses_mu_);
+  ResponsesTable responses_table_ TF_GUARDED_BY(responses_mu_);
   RdmaMessageBuffer* tx_message_buffer_;
   RdmaMessageBuffer* rx_message_buffer_;
   std::vector<RdmaMessageBuffer*> message_buffers_;
@@ -514,9 +515,9 @@ class RdmaMessageBuffer {
   ibv_mr* self_ = nullptr;
   mutex mu_;
   RemoteMR remote_;
-  std::queue<string> queue_ GUARDED_BY(mu_);
-  BufferStatus local_status_ GUARDED_BY(mu_) = none;
-  BufferStatus remote_status_ GUARDED_BY(mu_) = none;
+  std::queue<string> queue_ TF_GUARDED_BY(mu_);
+  BufferStatus local_status_ TF_GUARDED_BY(mu_) = none;
+  BufferStatus remote_status_ TF_GUARDED_BY(mu_) = none;
 };
 
 }  // namespace tensorflow

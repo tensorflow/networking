@@ -19,7 +19,6 @@ limitations under the License.
 #include "grpcpp/alarm.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/server_builder.h"
-
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/lib/core/refcount.h"
@@ -49,7 +48,7 @@ class GrpcVerbsService : public AsyncServiceInterface {
   ::grpc::ServerCompletionQueue* cq_;
   grpc::VerbsService::AsyncService verbs_service_;
   mutex shutdown_mu_;
-  bool is_shutdown_ GUARDED_BY(shutdown_mu_);
+  bool is_shutdown_ TF_GUARDED_BY(shutdown_mu_);
   ::grpc::Alarm* shutdown_alarm_;
   // not owned
   RdmaMgr* rdma_mgr_;
