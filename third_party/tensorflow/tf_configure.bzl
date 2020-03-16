@@ -195,7 +195,7 @@ def _tf_pip_impl(repository_ctx):
         "farmhash_header_include",
     )
 
-    grpc_header_dir = "%s/%s" % (tf_header_dir, "external/grpc/include")
+    grpc_header_dir = "%s/%s" % (tf_header_dir, "external/com_github_grpc_grpc/include")
     grpc_header_rule = _symlink_genrule_for_dir(
         repository_ctx,
         grpc_header_dir,
