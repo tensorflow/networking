@@ -17,7 +17,6 @@ limitations under the License.
 #define TENSORFLOW_CONTRIB_GDR_GDR_SERVER_LIB_H_
 
 #include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
-
 #include "tensorflow_networking/gdr/gdr_memory_manager.h"
 
 namespace tensorflow {
@@ -45,7 +44,7 @@ class GdrServer : public GrpcServer {
   mutex mu_;
 
   std::unique_ptr<RemoteMemoryManager> remote_memory_manager_;
-  std::unique_ptr<Thread> gdr_thread_ GUARDED_BY(mu_);
+  std::unique_ptr<Thread> gdr_thread_ TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

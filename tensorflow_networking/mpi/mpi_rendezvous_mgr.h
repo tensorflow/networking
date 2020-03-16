@@ -31,7 +31,6 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/request_id.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
-
 #include "tensorflow_networking/mpi/mpi_msg.pb.h"
 #include "tensorflow_networking/mpi/mpi_utils.h"
 
@@ -173,10 +172,10 @@ class MPIRendezvousMgr : public BaseRendezvousMgr {
   mutex msq_;
   mutex mrq_;
 
-  std::queue<SendQueueEntry> send_queue_ GUARDED_BY(msq_);
-  std::queue<RequestQueueEntry> request_queue_ GUARDED_BY(mrq_);
+  std::queue<SendQueueEntry> send_queue_ TF_GUARDED_BY(msq_);
+  std::queue<RequestQueueEntry> request_queue_ TF_GUARDED_BY(mrq_);
   std::map<std::string, std::shared_ptr<MPIRequestTensorCall>> recv_tensor_map_
-      GUARDED_BY(mrq_);
+      TF_GUARDED_BY(mrq_);
 
   RecentRequestIds recv_tensor_recent_request_ids_;
 
