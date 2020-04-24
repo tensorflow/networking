@@ -1,4 +1,4 @@
-From dd0043f7e723d83343d1053ad8b732a5f67bbcf9 Mon Sep 17 00:00:00 2001
+From e984160c86b0778fab534a321788ffe87cacc468 Mon Sep 17 00:00:00 2001
 From: "tongxuan.ltx" <tongxuan.ltx@alibaba-inc.com>
 Date: Wed, 25 Mar 2020 15:31:58 +0800
 Subject: [PATCH] seastar changes for tensorflow
@@ -6,17 +6,19 @@ Subject: [PATCH] seastar changes for tensorflow
 ---
  include/seastar/core/channel.hh              |  43 ++++
  include/seastar/core/internal/pollable_fd.hh |   2 +
- include/seastar/core/iostream-impl.hh        | 101 +++++++--
+ include/seastar/core/iostream-impl.hh        | 101 ++++++--
  include/seastar/core/iostream.hh             |  31 ++-
  include/seastar/core/packet_queue.hh         |  45 ++++
  include/seastar/core/reactor.hh              |  33 ++-
  include/seastar/net/posix-stack.hh           |   3 +
- src/core/channel.cc                          |  63 ++++++
+ include/seastar/net/tls.hh                   |   3 +-
+ src/core/channel.cc                          |  63 +++++
  src/core/packet_queue.cc                     |  57 +++++
- src/core/reactor.cc                          | 216 ++++++++++++++++---
+ src/core/reactor.cc                          | 243 +++++++++++++++++--
  src/net/native-stack-impl.hh                 |   3 +
- src/net/posix-stack.cc                       |  36 ++++
- 12 files changed, 587 insertions(+), 46 deletions(-)
+ src/net/posix-stack.cc                       |  59 +++++
+ src/net/tls.cc                               |   3 +-
+ 14 files changed, 641 insertions(+), 48 deletions(-)
  create mode 100644 include/seastar/core/channel.hh
  create mode 100644 include/seastar/core/packet_queue.hh
  create mode 100644 src/core/channel.cc
@@ -534,6 +536,24 @@ index 803f6db6..ccc7a711 100644
  };
  
  template <transport Transport>
+diff --git a/include/seastar/net/tls.hh b/include/seastar/net/tls.hh
+index ad0c3f00..e3f5f475 100644
+--- a/include/seastar/net/tls.hh
++++ b/include/seastar/net/tls.hh
+@@ -20,6 +20,7 @@
+  */
+ #pragma once
+ 
++#ifdef SEASTAR_DEFAULT_TLS
+ #include <vector>
+ #include <map>
+ 
+@@ -278,4 +279,4 @@ namespace tls {
+     /// @}
+ }
+ }
+-
++#endif
 diff --git a/src/core/channel.cc b/src/core/channel.cc
 new file mode 100644
 index 00000000..58620551
@@ -667,10 +687,37 @@ index 00000000..d0f56ea9
 +
 +}  // namespace seastar
 diff --git a/src/core/reactor.cc b/src/core/reactor.cc
-index e2ec4e56..f3492b90 100644
+index e2ec4e56..c81e6ff7 100644
 --- a/src/core/reactor.cc
 +++ b/src/core/reactor.cc
-@@ -641,6 +641,7 @@ class reactor_backend {
+@@ -70,11 +70,15 @@
+ #include <boost/version.hpp>
+ #include <atomic>
+ #include <dirent.h>
++
++#ifdef SEASTAR_DEFAULT_XFS
+ #include <linux/types.h> // for xfs, below
+ #include <sys/ioctl.h>
+ #include <xfs/linux.h>
+ #define min min    /* prevent xfs.h from defining min() as a macro */
+ #include <xfs/xfs.h>
++#endif
++
+ #undef min
+ #ifdef SEASTAR_HAVE_DPDK
+ #include <seastar/core/dpdk_rte.hh>
+@@ -101,7 +105,10 @@
+ #include <seastar/util/backtrace.hh>
+ #include <seastar/util/spinlock.hh>
+ #include <seastar/util/print_safe.hh>
++
++#ifdef SEASTAR_DEFAULT_SDT
+ #include <sys/sdt.h>
++#endif
+ 
+ #ifdef HAVE_OSV
+ #include <osv/newpoll.hh>
+@@ -641,6 +648,7 @@ class reactor_backend {
      virtual void reset_preemption_monitor() = 0;
      virtual void request_preemption() = 0;
      virtual void start_handling_signal() = 0;
@@ -678,7 +725,7 @@ index e2ec4e56..f3492b90 100644
  };
  
  // reactor backend using file-descriptor & epoll, suitable for running on
-@@ -674,6 +675,7 @@ class reactor_backend_epoll : public reactor_backend {
+@@ -674,6 +682,7 @@ class reactor_backend_epoll : public reactor_backend {
      virtual void reset_preemption_monitor() override;
      virtual void request_preemption() override;
      virtual void start_handling_signal() override;
@@ -686,7 +733,7 @@ index e2ec4e56..f3492b90 100644
  };
  
  #ifdef HAVE_OSV
-@@ -694,6 +696,7 @@ class reactor_backend_osv : public reactor_backend {
+@@ -694,6 +703,7 @@ class reactor_backend_osv : public reactor_backend {
      virtual future<> writeable(pollable_fd_state& fd) override;
      virtual void forget(pollable_fd_state& fd) override;
      void enable_timer(steady_clock_type::time_point when);
@@ -694,7 +741,7 @@ index e2ec4e56..f3492b90 100644
  };
  #endif /* HAVE_OSV */
  
-@@ -963,6 +966,9 @@ class reactor_backend_aio : public reactor_backend {
+@@ -963,6 +973,9 @@ class reactor_backend_aio : public reactor_backend {
          // The aio backend only uses SIGHUP/SIGTERM/SIGINT. We don't need to handle them right away and our
          // implementation of request_preemption is not signal safe, so do nothing.
      }
@@ -704,7 +751,7 @@ index e2ec4e56..f3492b90 100644
  };
  
  reactor_backend_epoll::reactor_backend_epoll(reactor* r)
-@@ -993,6 +999,10 @@ void reactor_backend_epoll::start_tick() {
+@@ -993,6 +1006,10 @@ void reactor_backend_epoll::start_tick() {
      auto sched_ok = pthread_setschedparam(_task_quota_timer_thread.native_handle(), SCHED_FIFO, &sp);
      if (sched_ok != 0 && _r->_id == 0) {
          seastar_logger.warn("Unable to set SCHED_FIFO scheduling policy for timer thread; latency impact possible. Try adding CAP_SYS_NICE");
@@ -715,7 +762,7 @@ index e2ec4e56..f3492b90 100644
      }
  }
  
-@@ -1337,6 +1347,7 @@ reactor::reactor(unsigned id, reactor_backend_selector rbs, reactor_config cfg)
+@@ -1337,6 +1354,7 @@ reactor::reactor(unsigned id, reactor_backend_selector rbs, reactor_config cfg)
      , _io_context(0)
      , _reuseport(posix_reuseport_detect())
      , _thread_pool(std::make_unique<thread_pool>(this, seastar::format("syscall-{}", id))) {
@@ -723,7 +770,7 @@ index e2ec4e56..f3492b90 100644
      _task_queues.push_back(std::make_unique<task_queue>(0, "main", 1000));
      _task_queues.push_back(std::make_unique<task_queue>(1, "atexit", 1000));
      _at_destroy_tasks = _task_queues.back().get();
-@@ -1375,6 +1386,7 @@ reactor::~reactor() {
+@@ -1375,6 +1393,7 @@ reactor::~reactor() {
      auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
      assert(r == 0);
  
@@ -731,7 +778,7 @@ index e2ec4e56..f3492b90 100644
      _backend->stop_tick();
      auto eraser = [](auto& list) {
          while (!list.empty()) {
-@@ -1511,7 +1523,8 @@ void cpu_stall_detector::update_config(cpu_stall_detector_config cfg) {
+@@ -1511,7 +1530,8 @@ void cpu_stall_detector::update_config(cpu_stall_detector_config cfg) {
  
  void cpu_stall_detector::maybe_report() {
      if (_reported++ < _max_reports_per_minute) {
@@ -741,7 +788,7 @@ index e2ec4e56..f3492b90 100644
      }
  }
  // We use a tick at every timer firing so we can report suppressed backtraces.
-@@ -1770,6 +1783,7 @@ void reactor::configure(boost::program_options::variables_map vm) {
+@@ -1770,6 +1790,7 @@ void reactor::configure(boost::program_options::variables_map vm) {
      _max_task_backlog = vm["max-task-backlog"].as<unsigned>();
      _max_poll_time = vm["idle-poll-time-us"].as<unsigned>() * 1us;
      if (vm.count("poll-mode")) {
@@ -749,7 +796,7 @@ index e2ec4e56..f3492b90 100644
          _max_poll_time = std::chrono::nanoseconds::max();
      }
      if (vm.count("overprovisioned")
-@@ -1833,12 +1847,14 @@ reactor::posix_listen(socket_address sa, listen_options opts) {
+@@ -1833,12 +1854,14 @@ reactor::posix_listen(socket_address sa, listen_options opts) {
      if (opts.reuse_address) {
          fd.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1);
      }
@@ -767,7 +814,7 @@ index e2ec4e56..f3492b90 100644
      } catch (const std::system_error& s) {
          throw std::system_error(s.code(), fmt::format("posix_listen failed for address {}", sa));
      }
-@@ -1892,6 +1908,7 @@ reactor::posix_connect(lw_shared_ptr<pollable_fd> pfd, socket_address sa, socket
+@@ -1892,6 +1915,7 @@ reactor::posix_connect(lw_shared_ptr<pollable_fd> pfd, socket_address sa, socket
          }
      }
  #endif
@@ -775,7 +822,90 @@ index e2ec4e56..f3492b90 100644
      if (!local.is_wildcard()) {
          // call bind() only if local address is not wildcard
          pfd->get_file_desc().bind(local.u.sa, sizeof(sa.u.sas));
-@@ -3545,6 +3562,53 @@ future<> reactor::run_exit_tasks() {
+@@ -2285,7 +2309,9 @@ posix_file_impl::posix_file_impl(int fd, open_flags f, file_open_options options
+         , _open_flags(f)
+         , _fd(fd)
+ {
++#ifdef SEASTAR_DEFAULT_XFS
+     query_dma_alignment();
++#endif
+ }
+ 
+ posix_file_impl::~posix_file_impl() {
+@@ -2299,6 +2325,7 @@ posix_file_impl::~posix_file_impl() {
+     }
+ }
+ 
++#ifdef SEASTAR_DEFAULT_XFS
+ void
+ posix_file_impl::query_dma_alignment() {
+     dioattr da;
+@@ -2311,6 +2338,7 @@ posix_file_impl::query_dma_alignment() {
+         _disk_write_dma_alignment = std::max<unsigned>(da.d_miniosz, 4096);
+     }
+ }
++#endif
+ 
+ namespace internal {
+ 
+@@ -2800,6 +2828,7 @@ append_challenged_posix_file_impl::close() noexcept {
+ 
+ // Some kernels can append to xfs filesystems, some cannot; determine
+ // from kernel version.
++#ifdef SEASTAR_DEFAULT_XFS
+ static
+ unsigned
+ xfs_concurrency_from_kernel_version() {
+@@ -2812,6 +2841,7 @@ xfs_concurrency_from_kernel_version() {
+     // Cannot append at all; need ftrucnate().
+     return 0;
+ }
++#endif
+ 
+ inline
+ shared_ptr<file_impl>
+@@ -2848,12 +2878,14 @@ make_file_impl(int fd, file_open_options options) {
+             throw_system_error_on(r == -1);
+             append_support as;
+             switch (sfs.f_type) {
++#ifdef SEASTAR_DEFAULT_XFS
+             case 0x58465342: /* XFS */
+                 as.append_challenged = true;
+                 static auto xc = xfs_concurrency_from_kernel_version();
+                 as.append_concurrency = xc;
+                 as.fsync_is_exclusive = true;
+                 break;
++#endif
+             case 0x6969: /* NFS */
+                 as.append_challenged = false;
+                 as.append_concurrency = 0;
+@@ -2913,6 +2945,7 @@ reactor::open_file_dma(sstring name, open_flags flags, file_open_options options
+             return maybe_ret;
+         }
+         if (fd != -1) {
++#ifdef SEASTAR_DEFAULT_XFS
+             fsxattr attr = {};
+             if (options.extent_allocation_size_hint) {
+                 attr.fsx_xflags |= XFS_XFLAG_EXTSIZE;
+@@ -2920,6 +2953,7 @@ reactor::open_file_dma(sstring name, open_flags flags, file_open_options options
+             }
+             // Ignore error; may be !xfs, and just a hint anyway
+             ::ioctl(fd, XFS_IOC_FSSETXATTR, &attr);
++#endif
+         }
+         return wrap_syscall<int>(fd);
+     }).then([options, name] (syscall_result<int> sr) {
+@@ -3086,7 +3120,9 @@ reactor::file_system_at(sstring pathname) {
+         return wrap_syscall(ret, st);
+     }).then([pathname] (syscall_result_extra<struct statfs> sr) {
+         static std::unordered_map<long int, fs_type> type_mapper = {
++#ifdef SEASTAR_DEFAULT_XFS
+             { 0x58465342, fs_type::xfs },
++#endif
+             { EXT2_SUPER_MAGIC, fs_type::ext2 },
+             { EXT3_SUPER_MAGIC, fs_type::ext3 },
+             { EXT4_SUPER_MAGIC, fs_type::ext4 },
+@@ -3545,6 +3581,53 @@ future<> reactor::run_exit_tasks() {
      });
  }
  
@@ -829,7 +959,23 @@ index e2ec4e56..f3492b90 100644
  void reactor::stop() {
      assert(engine()._id == 0);
      smp::cleanup_cpu();
-@@ -3892,6 +3956,71 @@ class reactor::drain_cross_cpu_freelist_pollfn final : public reactor::pollfn {
+@@ -3685,11 +3768,15 @@ void reactor::run_tasks(task_queue& tq) {
+     while (!tasks.empty()) {
+         auto tsk = std::move(tasks.front());
+         tasks.pop_front();
++#ifdef SEASTAR_DEFAULT_SDT
+         STAP_PROBE(seastar, reactor_run_tasks_single_start);
++#endif
+         task_histogram_add_task(*tsk);
+         tsk->run_and_dispose();
+         tsk.release();
++#ifdef SEASTAR_DEFAULT_SDT
+         STAP_PROBE(seastar, reactor_run_tasks_single_end);
++#endif
+         ++tq._tasks_processed;
+         // check at end of loop, to allow at least one task to run
+         if (need_preempt()) {
+@@ -3892,6 +3979,71 @@ class reactor::drain_cross_cpu_freelist_pollfn final : public reactor::pollfn {
      }
  };
  
@@ -901,7 +1047,27 @@ index e2ec4e56..f3492b90 100644
  class reactor::lowres_timer_pollfn final : public reactor::pollfn {
      reactor& _r;
      // A highres timer is implemented as a waking  signal; so
-@@ -4175,22 +4304,25 @@ int reactor::run() {
+@@ -4102,7 +4254,9 @@ reactor::run_some_tasks() {
+     reset_preemption_monitor();
+ 
+     sched_clock::time_point t_run_completed = std::chrono::steady_clock::now();
++#ifdef SEASTAR_DEFAULT_SDT
+     STAP_PROBE(seastar, reactor_run_tasks_start);
++#endif
+     _cpu_stall_detector->start_task_run(t_run_completed);
+     do {
+         auto t_run_started = t_run_completed;
+@@ -4126,7 +4280,9 @@ reactor::run_some_tasks() {
+         }
+     } while (have_more_tasks() && !need_preempt());
+     _cpu_stall_detector->end_task_run(t_run_completed);
++#ifdef SEASTAR_DEFAULT_SDT
+     STAP_PROBE(seastar, reactor_run_tasks_end);
++#endif
+     *internal::current_scheduling_group_ptr() = default_scheduling_group(); // Prevent inheritance from last group run
+     sched_print("run_some_tasks: end");
+ }
+@@ -4175,22 +4331,25 @@ int reactor::run() {
      }
      if (my_io_queues.size() > 0) {
  #ifndef HAVE_OSV
@@ -930,7 +1096,7 @@ index e2ec4e56..f3492b90 100644
  
      _cpu_started.wait(smp::count).then([this] {
          _network_stack->initialize().then([this] {
-@@ -4327,6 +4459,26 @@ int reactor::run() {
+@@ -4327,6 +4486,26 @@ int reactor::run() {
      return _return;
  }
  
@@ -957,7 +1123,7 @@ index e2ec4e56..f3492b90 100644
  void
  reactor::sleep() {
      for (auto i = _pollers.begin(); i != _pollers.end(); ++i) {
-@@ -4465,6 +4617,11 @@ reactor::poller::~poller() {
+@@ -4465,6 +4644,11 @@ reactor::poller::~poller() {
      }
  }
  
@@ -969,7 +1135,7 @@ index e2ec4e56..f3492b90 100644
  bool
  reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigmask) {
      std::array<epoll_event, 128> eevt;
-@@ -4995,6 +5152,7 @@ std::vector<reactor*> smp::_reactors;
+@@ -4995,6 +5179,7 @@ std::vector<reactor*> smp::_reactors;
  std::unique_ptr<smp_message_queue*[], smp::qs_deleter> smp::_qs;
  std::thread::id smp::_tmain;
  unsigned smp::count = 1;
@@ -977,7 +1143,7 @@ index e2ec4e56..f3492b90 100644
  bool smp::_using_dpdk;
  
  void smp::start_all_queues()
-@@ -5083,6 +5241,20 @@ void smp::create_thread(std::function<void ()> thread_loop) {
+@@ -5083,6 +5268,20 @@ void smp::create_thread(std::function<void ()> thread_loop) {
      }
  }
  
@@ -998,7 +1164,7 @@ index e2ec4e56..f3492b90 100644
  // Installs handler for Signal which ensures that Func is invoked only once
  // in the whole program and that after it is invoked the default handler is restored.
  template<int Signal, void(*Func)()>
-@@ -5116,16 +5288,6 @@ static void sigabrt_action() noexcept {
+@@ -5116,16 +5315,6 @@ static void sigabrt_action() noexcept {
      print_with_backtrace("Aborting");
  }
  
@@ -1015,7 +1181,7 @@ index e2ec4e56..f3492b90 100644
  class disk_config_params {
  private:
      unsigned _num_io_queues = 0;
-@@ -5285,18 +5447,18 @@ void smp::configure(boost::program_options::variables_map configuration, reactor
+@@ -5285,18 +5474,18 @@ void smp::configure(boost::program_options::variables_map configuration, reactor
      // We leave some signals unmasked since we don't handle them ourself.
      sigset_t sigs;
      sigfillset(&sigs);
@@ -1040,7 +1206,7 @@ index e2ec4e56..f3492b90 100644
  
  #ifdef SEASTAR_HAVE_DPDK
      _using_dpdk = configuration.count("dpdk-pmd");
-@@ -5487,9 +5649,9 @@ void smp::configure(boost::program_options::variables_map configuration, reactor
+@@ -5487,9 +5676,9 @@ void smp::configure(boost::program_options::variables_map configuration, reactor
              memory::set_heap_profiling_enabled(heapprof_enabled);
              sigset_t mask;
              sigfillset(&mask);
@@ -1052,7 +1218,7 @@ index e2ec4e56..f3492b90 100644
              auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
              throw_pthread_error(r);
              init_default_smp_service_group();
-@@ -5597,6 +5759,10 @@ __thread reactor* local_engine;
+@@ -5597,6 +5786,10 @@ __thread reactor* local_engine;
  reactor_backend_osv::reactor_backend_osv() {
  }
  
@@ -1078,10 +1244,57 @@ index 4be2ca08..e1c8a953 100644
          _conn->close_write();
          return make_ready_future<>();
 diff --git a/src/net/posix-stack.cc b/src/net/posix-stack.cc
-index 758deb0b..bdd0d9a7 100644
+index 758deb0b..784dba31 100644
 --- a/src/net/posix-stack.cc
 +++ b/src/net/posix-stack.cc
-@@ -325,6 +325,37 @@ posix_data_source_impl::get() {
+@@ -26,7 +26,9 @@
+ #include <seastar/net/api.hh>
+ #include <seastar/util/std-compat.hh>
+ #include <netinet/tcp.h>
++#ifdef SEASTAR_DEFAULT_SCTP
+ #include <netinet/sctp.h>
++#endif
+ 
+ namespace seastar {
+ 
+@@ -67,6 +69,7 @@ class posix_connected_socket_operations<transport::TCP> {
+     }
+ };
+ 
++#ifdef SEASTAR_DEFAULT_SCTP
+ template <>
+ class posix_connected_socket_operations<transport::SCTP> {
+ public:
+@@ -103,6 +106,7 @@ class posix_connected_socket_operations<transport::SCTP> {
+         };
+     }
+ };
++#endif
+ 
+ template <transport Transport>
+ class posix_connected_socket_impl final : public connected_socket_impl, posix_connected_socket_operations<Transport> {
+@@ -154,7 +158,10 @@ class posix_connected_socket_impl final : public connected_socket_impl, posix_co
+     friend class posix_socket_impl;
+ };
+ using posix_connected_tcp_socket_impl = posix_connected_socket_impl<transport::TCP>;
++
++#ifdef SEASTAR_DEFAULT_SCTP
+ using posix_connected_sctp_socket_impl = posix_connected_socket_impl<transport::SCTP>;
++#endif
+ 
+ class posix_socket_impl final : public socket_impl {
+     lw_shared_ptr<pollable_fd> _fd;
+@@ -190,7 +197,9 @@ class posix_socket_impl final : public socket_impl {
+             if (proto == transport::TCP) {
+                 csi.reset(new posix_connected_tcp_socket_impl(std::move(fd), allocator));
+             } else {
++#ifdef SEASTAR_DEFAULT_SCTP
+                 csi.reset(new posix_connected_sctp_socket_impl(std::move(fd), allocator));
++#endif
+             }
+             return make_ready_future<connected_socket>(connected_socket(std::move(csi)));
+         });
+@@ -325,6 +334,37 @@ posix_data_source_impl::get() {
      });
  }
  
@@ -1119,7 +1332,7 @@ index 758deb0b..bdd0d9a7 100644
  future<> posix_data_source_impl::close() {
      _fd->shutdown(SHUT_RD);
      return make_ready_future<>();
-@@ -365,6 +396,11 @@ posix_data_sink_impl::close() {
+@@ -365,6 +405,11 @@ posix_data_sink_impl::close() {
      return make_ready_future<>();
  }
  
@@ -1131,6 +1344,60 @@ index 758deb0b..bdd0d9a7 100644
  server_socket
  posix_network_stack::listen(socket_address sa, listen_options opt) {
      if (opt.proto == transport::TCP) {
+@@ -373,10 +418,17 @@ posix_network_stack::listen(socket_address sa, listen_options opt) {
+             :
+             server_socket(std::make_unique<posix_server_tcp_socket_impl>(sa, engine().posix_listen(sa, opt), opt.lba, _allocator));
+     } else {
++#ifdef SEASTAR_DEFAULT_SCTP
+         return _reuseport ?
+             server_socket(std::make_unique<posix_reuseport_server_sctp_socket_impl>(sa, engine().posix_listen(sa, opt), _allocator))
+             :
+             server_socket(std::make_unique<posix_server_sctp_socket_impl>(sa, engine().posix_listen(sa, opt), opt.lba, _allocator));
++#else
++        return _reuseport ?
++            server_socket(std::make_unique<posix_reuseport_server_tcp_socket_impl>(sa, engine().posix_listen(sa, opt), _allocator))
++            :
++            server_socket(std::make_unique<posix_server_tcp_socket_impl>(sa, engine().posix_listen(sa, opt), opt.lba, _allocator));
++#endif
+     }
+ }
+ 
+@@ -397,10 +449,17 @@ posix_ap_network_stack::listen(socket_address sa, listen_options opt) {
+             :
+             server_socket(std::make_unique<posix_tcp_ap_server_socket_impl>(sa));
+     } else {
++#ifdef SEASTAR_DEFAULT_SCTP
+         return _reuseport ?
+             server_socket(std::make_unique<posix_reuseport_server_sctp_socket_impl>(sa, engine().posix_listen(sa, opt)))
+             :
+             server_socket(std::make_unique<posix_sctp_ap_server_socket_impl>(sa));
++#else
++        return _reuseport ?
++            server_socket(std::make_unique<posix_reuseport_server_tcp_socket_impl>(sa, engine().posix_listen(sa, opt)))
++            :
++            server_socket(std::make_unique<posix_tcp_ap_server_socket_impl>(sa));
++#endif
+     }
+ }
+ 
+diff --git a/src/net/tls.cc b/src/net/tls.cc
+index fd409004..6ac50cd2 100644
+--- a/src/net/tls.cc
++++ b/src/net/tls.cc
+@@ -18,7 +18,7 @@
+ /*
+  * Copyright 2015 Cloudius Systems
+  */
+-
++#ifdef SEASTAR_DEFAULT_TLS
+ #include <gnutls/gnutls.h>
+ #include <gnutls/x509.h>
+ #include <system_error>
+@@ -1207,3 +1207,4 @@ server_socket tls::listen(shared_ptr<server_credentials> creds, server_socket ss
+ }
+ 
+ }
++#endif
 -- 
 2.19.1.3.ge56e4f7
 

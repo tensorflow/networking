@@ -61,15 +61,10 @@ cc_library(
         "@cares",
         "@cryptopp",
         "@fmtlib",
-        "@gnutls",
         "@lz4",
         "@org_lzma_lzma//:lzma",
         "@readerwriterqueue",
-        "@sctp",
-        "@systemtap-sdt",
-        "@xfs",
         "@yaml-cpp",
-        "@readerwriterqueue",
     ],
 )
 

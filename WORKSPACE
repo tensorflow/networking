@@ -123,51 +123,6 @@ maybe(
 )
 
 maybe(
-    http_archive,
-    name = "sctp",
-    build_file = "//third_party:sctp.BUILD",
-    sha256 = "3e9ab5b3844a8b65fc8152633aafe85f406e6da463e53921583dfc4a443ff03a",
-    strip_prefix = "lksctp-tools-1.0.18",
-    urls = ["https://github.com/sctp/lksctp-tools/archive/v1.0.18.tar.gz"],
-)
-
-maybe(
-    http_archive,
-    name = "gnutls",
-    build_file = "//third_party:gnutls.BUILD",
-    sha256 = "bfacf16e342949ffd977a9232556092c47164bd26e166736cf3459a870506c4b",
-    strip_prefix = "gnutls-3.6.12",
-    urls = ["https://mirrors.aliyun.com/macports/distfiles/gnutls/gnutls-3.6.12.tar.xz"],
-)
-
-maybe(
-    http_archive,
-    name = "systemtap-sdt",
-    build_file = "//third_party:systemtap-sdt.BUILD",
-    sha256 = "0984ebe3162274988252ec35074021dc1e8420d87a8b35f437578562fce08781",
-    strip_prefix = "systemtap-4.2",
-    urls = ["https://sourceware.org/systemtap/ftp/releases/systemtap-4.2.tar.gz"],
-)
-
-maybe(
-    http_archive,
-    name = "uuid",
-    build_file = "//third_party:uuid.BUILD",
-    sha256 = "37ac05d82c6410d89bc05d43cee101fefc8fe6cf6090b3ce7a1409a6f35db606",
-    strip_prefix = "util-linux-2.35.1",
-    urls = ["https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/v2.35/util-linux-2.35.1.tar.gz"],
-)
-
-maybe(
-    http_archive,
-    name = "xfs",
-    build_file = "//third_party:xfs.BUILD",
-    sha256 = "cfbb0b136799c48cb79435facd0969c5a60a587a458e2d16f9752771027efbec",
-    strip_prefix = "xfsprogs-5.5.0",
-    urls = ["https://mirrors.edge.kernel.org/pub/linux/utils/fs/xfs/xfsprogs/xfsprogs-5.5.0.tar.xz"],
-)
-
-maybe(
     tensorflow_http_archive,
     name = "seastar",
     build_file = "//third_party:seastar.BUILD",
