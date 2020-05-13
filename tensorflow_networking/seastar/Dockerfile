@@ -1,4 +1,5 @@
-FROM tensorflow/tensorflow:nightly-custom-op-ubuntu16
+#FROM tensorflow/tensorflow:nightly-custom-op-ubuntu16
+FROM byronyi/tensorflow:ubuntu16.04-manylinux2014
 
 RUN apt-get update && \
     apt-get install -yq --no-install-recommends \
