@@ -82,3 +82,9 @@ Using Docker:
 docker build -t tf_networking -f tensorflow_networking/mpi_collectives/Dockerfile .
 ```
 
+#####  `grpc+seastar` extension
+
+Using Bazel:
+
+```bash
+bazel build -c opt --copt='-std=gnu++14' //tensorflow_networking:libtensorflow_networking.so
