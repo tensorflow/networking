@@ -136,7 +136,7 @@ from tensorflow.contrib.mpi_collectives.python.ops.mpi_ops import _allreduce
 def allreduce(tensor, average=True):
   """Perform an MPI allreduce on a tf.Tensor or tf.IndexedSlices.
 
-  Arguments:
+  Args:
   tensor: tf.Tensor, tf.Variable, or tf.IndexedSlices to reduce.
           The shape of the input must be identical across all ranks.
   average: If True, computes the average over all ranks.
