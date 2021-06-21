@@ -25,15 +25,10 @@ class SeastarRemoteWorker : public WorkerInterface,
 
   ~SeastarRemoteWorker() override {}
 
-  void GetStatusAsync(const GetStatusRequest* request,
+  void GetStatusAsync(CallOptions* call_opts,
+                      const GetStatusRequest* request,
                       GetStatusResponse* response, bool fail_fast,
                       StatusCallback done) override {
-    GetStatusAsyncWithOptions(request, response, done, nullptr);
-  }
-
-  void GetStatusAsyncWithOptions(const GetStatusRequest* request,
-                                 GetStatusResponse* response,
-                                 StatusCallback done, CallOptions* call_opts) {
     env_->compute_pool->Schedule([this, request, response, call_opts, done]() {
       IssueRequest(request, response, SeastarWorkerServiceMethod::kGetStatus,
                    std::move(done), call_opts);

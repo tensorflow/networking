@@ -24,7 +24,7 @@ from setuptools.dist import Distribution
 
 __version__ = '0.1.0'
 REQUIRED_PACKAGES = [
-    'tf-nightly >= 2.1.0.dev20191206'
+    'tensorflow == 2.4.1'
 ]
 project_name = 'tensorflow-networking'
 

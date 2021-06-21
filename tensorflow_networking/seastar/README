@@ -4,7 +4,7 @@ Dockerfile: tensorflow_networking/seastar/Dockerfile
 
 ## Build Network whl with seastar:
 1. python3 third_party/tensorflow/configure.py
-2. bazel build -c opt --cxxopt=-std=gnu++14 --crosstool_top=@//third_party/toolchains/preconfig/ubuntu16.04/gcc7_manylinux2010:toolchain //tensorflow_networking:libtensorflow_networking.so
+2. bazel build -c opt --cxxopt=-std=gnu++14 --crosstool_top=@//third_party/toolchains/preconfig/ubuntu16.04/gcc7_manylinux2014:toolchain //tensorflow_networking:libtensorflow_networking.so
 3. cp bazel-bin/tensorflow_networking/libtensorflow_networking.so tensorflow_networking
 4. python3.6 setup.py bdist_wheel
 5. pip3.6 install --upgrade dist/tensorflow_networking-0.1.0-cp36-cp36m-linux_x86_64.whl

@@ -69,7 +69,6 @@ cc_library(
         "@systemtap-sdt",
         "@xfs",
         "@yaml-cpp",
-        "@readerwriterqueue",
     ],
 )
 
