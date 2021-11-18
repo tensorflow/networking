@@ -13,31 +13,39 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow_networking/verbs/rdma_rendezvous_mgr.h"
 #include <unordered_set>
+#include "tensorflow_networking/verbs/verbs_util.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow_networking/verbs/verbs_util.h"
+#include "tensorflow/core/distributed_runtime/worker_cache_partial.h"
 
 namespace tensorflow {
 
 class RdmaRemoteRendezvous : public BaseRemoteRendezvous {
  public:
   RdmaRemoteRendezvous(const WorkerEnv* env, int64 step_id, RdmaMgr* rdma_mgr)
-      : BaseRemoteRendezvous(env, step_id), rdma_mgr_(rdma_mgr) {}
+      : BaseRemoteRendezvous(env, step_id) {
+    rdma_mgr_ = rdma_mgr;
+  }
 
  protected:
   void RecvFromRemoteAsync(const Rendezvous::ParsedKey& parsed,
                            const Rendezvous::Args& args,
                            DoneCallback done) override;
 
+ public:
+  RdmaMgr* rdma_mgr_;
+
  private:
   ~RdmaRemoteRendezvous() override {}
-  RdmaMgr* rdma_mgr_;
+
 
   TF_DISALLOW_COPY_AND_ASSIGN(RdmaRemoteRendezvous);
 };
@@ -59,8 +67,8 @@ void RdmaRemoteRendezvous::RecvFromRemoteAsync(
     done(s, Args(), recv_args, Tensor{}, false);
     return;
   }
-  CHECK(dst_name.compare(rdma_mgr_->local_worker()) == 0);
-  RdmaChannel* rc = rdma_mgr_->FindChannel(src_name);
+  CHECK(dst_name.compare(static_cast<RdmaMgr*>(rdma_mgr_)->local_worker()) == 0);
+  RdmaChannel* rc = static_cast<RdmaMgr*>(rdma_mgr_)->FindChannel(src_name);
   string key(parsed.FullKey());
   string key_with_step_id = VerbsUtil::AppendStepidToKey(key, step_id_);
 
@@ -71,6 +79,17 @@ void RdmaRemoteRendezvous::RecvFromRemoteAsync(
     done(s, Args(), recv_args, Tensor(), true);
     return;
   }
+
+  uint64_t time_now = Env::Default()->NowMicros();
+
+  // Add to Channel LocalDriverBufferMgr
+  if (rc->could_send_driver_) {
+    RDMA_LOG(1) << "Recv From Local key:" << key << " will GetBufferMgr";
+    rc->local_driver_buffer_mgr_->QueueLoadAsync(
+      key, recv_args, std::move(done), Env::Default()->NowMicros());
+    return;
+  }
+  RDMA_LOG(1) << "Request start:" << key;
 
   RdmaTensorRequest* request =
       rc->InsertTensorRequest(key, step_id_, dst_dev, recv_args, done);
@@ -86,3 +105,5 @@ BaseRemoteRendezvous* RdmaRendezvousMgr::Create(int64 step_id,
 }
 
 }  // end namespace tensorflow
+
+#endif

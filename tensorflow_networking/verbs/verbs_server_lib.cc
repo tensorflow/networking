@@ -13,15 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow_networking/verbs/verbs_server_lib.h"
 
 #include "grpc/support/alloc.h"
 
+#include "tensorflow_networking/verbs/rdma_mgr.h"
+#include "tensorflow_networking/verbs/rdma_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow_networking/verbs/rdma_mgr.h"
-#include "tensorflow_networking/verbs/rdma_rendezvous_mgr.h"
 
 namespace tensorflow {
 
@@ -41,7 +43,7 @@ VerbsServer::VerbsServer(const ServerDef& server_def, Env* env)
 VerbsServer::~VerbsServer() {
   TF_CHECK_OK(Stop());
   TF_CHECK_OK(Join());
-  delete rdma_mgr_;
+  //delete rdma_mgr_;
   delete verbs_service_;
   delete channel_cache_;
 }
@@ -49,8 +51,8 @@ VerbsServer::~VerbsServer() {
 Status VerbsServer::ChannelCacheFactory(const ServerDef& server_def,
                                         GrpcChannelCache** channel_cache) {
   string name_prefix =
-      strings::StrCat("/job:", server_def.job_name(), "/replica:0", "/task:",
-                      server_def.task_index());
+      strings::StrCat("/job:", server_def.job_name(), "/replica:0",
+                      "/task:", server_def.task_index());
 
   GrpcChannelSpec channel_spec;
   TF_RETURN_IF_ERROR(ParseChannelSpec(server_def, &channel_spec));
@@ -59,6 +61,7 @@ Status VerbsServer::ChannelCacheFactory(const ServerDef& server_def,
       NewGrpcChannelCache(channel_spec, GetChannelCreationFunction());
 
   const string host_port = (*channel_cache)->TranslateTask(name_prefix);
+
   int requested_port;
 
   if (!strings::safe_strto32(str_util::Split(host_port, ':')[1],
@@ -79,7 +82,6 @@ Status VerbsServer::ChannelCacheFactory(const ServerDef& server_def,
 Status VerbsServer::Init(ServiceInitFunction service_func,
                          RendezvousMgrCreationFunction rendezvous_mgr_func) {
   std::call_once(reg_mem_visitors_call, []() { RdmaMgr::RegMemVisitors(); });
-
   GrpcServerOptions opts;
   opts.service_func = service_func;
   opts.rendezvous_mgr_func = rendezvous_mgr_func;
@@ -88,12 +90,16 @@ Status VerbsServer::Init(ServiceInitFunction service_func,
     mutex_lock l(mu_);
     CHECK_EQ(verbs_state_, DISCONNECTED);
     CHECK(ChannelCacheFactory(server_def(), &channel_cache_).ok());
+    LOG(INFO) << "ChannelCacheFactory init GrpcChannelCache End.";
     rdma_mgr_ = new RdmaMgr(worker_env(), channel_cache_);
     // set rdma_mgr for verbs_service and rdma_rendezvous_mgr
     verbs_service_->SetRdmaMgr(rdma_mgr_);
+    LOG(INFO) << "VerbsService SetRdmaMgr End.";
     dynamic_cast<RdmaRendezvousMgr*>(worker_env()->rendezvous_mgr)
         ->SetRdmaMgr(rdma_mgr_);
+    LOG(INFO) << "RdmaRendezvousMgr SetRdmaMgr End.";
   }
+  LOG(INFO) << "VerbsServer::Init End.";
   return s;
 }
 
@@ -107,10 +113,14 @@ Status VerbsServer::Start() {
       verbs_thread_.reset(worker_env()->env->StartThread(
           ThreadOptions(), "TF_verbs_service",
           [this] { verbs_service_->HandleRPCsLoop(); }));
+      LOG(INFO) << "Start SetupChannels begin:";
       rdma_mgr_->SetupChannels();
+      LOG(INFO) << "rdma_mgr_ SetupChannels succeed!";
       CHECK(rdma_mgr_->ConnectivityCheck()) << "Connectivity check failed!";
+      LOG(INFO) << "rdma_mgr_ Connectivity check succeed!";
       rdma_mgr_->InitAllocators();
       verbs_state_ = CONNECTED;
+      LOG(INFO) << "verbs state CONNECTED.";
     }
   }
   return s;
@@ -171,3 +181,5 @@ static VerbsServerRegistrar registrar;
 
 }  // namespace
 }  // namespace tensorflow
+
+#endif
