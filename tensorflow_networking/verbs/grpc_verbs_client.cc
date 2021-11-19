@@ -37,6 +37,39 @@ Status GrpcVerbsClient::GetRemoteAddress(const GetRemoteAddressRequest* request,
   return GetRemoteAddress(&call_options, request, response);
 }
 
+
+Status GrpcVerbsClient::ReqDriverMessage(CallOptions* call_options,
+                        const DriverMessageReq* request,
+                        DriverMessageResp* response) {
+  ::grpc::ClientContext ctx;
+  ctx.set_fail_fast(false);
+  SetDeadline(&ctx, call_options->GetTimeout());
+  return FromGrpcStatus(stub_->ReqDriverMessage(&ctx, *request, response));
+}
+
+Status GrpcVerbsClient::ReqDriverMessage(const DriverMessageReq* request,
+                        DriverMessageResp* response) {
+  CallOptions call_options;
+  call_options.SetTimeout(-1);  // no time out
+  return ReqDriverMessage(&call_options, request, response);
+}
+
+Status GrpcVerbsClient::ReqPleSendOrCheck(CallOptions* call_options,
+                          const PleSendOrCheckReq* request,
+                          PleSendOrCheckResp* response) {
+  ::grpc::ClientContext ctx;
+  ctx.set_fail_fast(false);
+  SetDeadline(&ctx, call_options->GetTimeout());
+  return FromGrpcStatus(stub_->ReqPleSendOrCheck(&ctx, *request, response));
+}
+
+Status GrpcVerbsClient::ReqPleSendOrCheck(const PleSendOrCheckReq* request,
+                        PleSendOrCheckResp* response) {
+  CallOptions call_options;
+  call_options.SetTimeout(-1);  // no time out
+  return ReqPleSendOrCheck(&call_options, request, response);
+}
+
 void GrpcVerbsClient::SetDeadline(::grpc::ClientContext* ctx,
                                   int64 time_in_ms) {
   if (time_in_ms > 0) {

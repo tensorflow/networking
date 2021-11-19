@@ -30,6 +30,8 @@ namespace grpc {
 
 static const char* grpcVerbsService_method_names[] = {
     "/tensorflow.VerbsService/GetRemoteAddress",
+    "/tensorflow.VerbsService/ReqDriverMessage",
+    "/tensorflow.VerbsService/ReqPleSendOrCheck"
 };
 
 std::unique_ptr<VerbsService::Stub> VerbsService::NewStub(
@@ -44,7 +46,14 @@ VerbsService::Stub::Stub(
     : channel_(channel),
       rpcmethod_GetRemoteAddress_(grpcVerbsService_method_names[0],
                                   ::grpc::internal::RpcMethod::NORMAL_RPC,
-                                  channel) {}
+                                  channel),
+      rpcmethod_ReqDriverMessage_(grpcVerbsService_method_names[1],
+                                  ::grpc::internal::RpcMethod::NORMAL_RPC,
+                                  channel),
+      rpcmethod_ReqPleSendOrCheck_(grpcVerbsService_method_names[2],
+                                  ::grpc::internal::RpcMethod::NORMAL_RPC,
+                                  channel)
+                                   {}
 
 ::grpc::Status VerbsService::Stub::GetRemoteAddress(
     ::grpc::ClientContext* context, const GetRemoteAddressRequest& request,
@@ -53,8 +62,24 @@ VerbsService::Stub::Stub(
       channel_.get(), rpcmethod_GetRemoteAddress_, context, request, response);
 }
 
+::grpc::Status VerbsService::Stub::ReqDriverMessage(
+    ::grpc::ClientContext* context, const DriverMessageReq& request,
+    DriverMessageResp* response) {
+  // LOG(INFO) << "Stub ReqDriverMessage..."
+  //           << " rpcmethod_ReqDriverMessage_:" << rpcmethod_ReqDriverMessage_;
+  return ::grpc::internal::BlockingUnaryCall(
+      channel_.get(), rpcmethod_ReqDriverMessage_, context, request, response);
+}
+
+::grpc::Status VerbsService::Stub::ReqPleSendOrCheck(
+    ::grpc::ClientContext* context, const PleSendOrCheckReq& request,
+    PleSendOrCheckResp* response) {
+  return ::grpc::internal::BlockingUnaryCall(
+      channel_.get(), rpcmethod_ReqPleSendOrCheck_, context, request, response);
+}
+
 VerbsService::AsyncService::AsyncService() {
-  for (int i = 0; i < 1; ++i) {
+  for (int i = 0; i < 3; ++i) {
     AddMethod(new ::grpc::internal::RpcServiceMethod(
         grpcVerbsService_method_names[i],
         ::grpc::internal::RpcMethod::NORMAL_RPC, nullptr));
