@@ -13,20 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow_networking/verbs/rdma_mgr.h"
 #include <fstream>
 #include <vector>
-#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
-#include "tensorflow/core/common_runtime/gpu/gpu_util.h"
-#include "tensorflow/core/common_runtime/pool_allocator.h"
-#include "tensorflow/core/common_runtime/process_state.h"
+#include "tensorflow_networking/verbs/grpc_verbs_client.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_cache.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
 #include "tensorflow/core/framework/allocator_registry.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow_networking/verbs/grpc_verbs_client.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace tensorflow {
 
@@ -41,36 +39,70 @@ RdmaMgr::RdmaMgr(const WorkerEnv* const worker_env,
   std::vector<string> workers;
   worker_env_->session_mgr->LegacySession()->worker_cache->ListWorkers(
       &workers);
+
   num_remote_workers_ = workers.size() - 1;
   VLOG(2) << "rmda_mgr on local worker: " << local_worker_;
+  string other_worker_name = "";
+  int worker_cq_num = 0;
+  int ps_cq_num = 0;
   for (size_t i = 0; i < workers.size(); i++) {
     if (local_worker_.compare(workers[i]) != 0) {
+      other_worker_name += ";" + workers[i];
+      ibv_cq* cq = nullptr;
+      if (workers[i].find("worker") != string::npos) {
+        RDMA_LOG(2) << "Schedule CQ num For worker: "
+                  << workers[i]
+                  << " cq_num:"
+                  << worker_cq_num % rdma_adapter_->cq_nums_;
+        cq = rdma_adapter_->cq_vec_[worker_cq_num % rdma_adapter_->cq_nums_];
+        worker_cq_num++;
+      } else if (workers[i].find("ps") != string::npos) {
+        RDMA_LOG(2) << "Schedule CQ num For ps: "
+                  << workers[i]
+                  << " cq_num:"
+                  << ps_cq_num % rdma_adapter_->cq_nums_;
+        cq = rdma_adapter_->cq_vec_[ps_cq_num % rdma_adapter_->cq_nums_];
+        ps_cq_num++;
+      } else {
+        RDMA_LOG(2) << "Schedule CQ num For chief: "
+                  << workers[i]
+                  << " cq_num:"
+                  << 0;
+        cq = rdma_adapter_->cq_vec_[0];
+      }
       channel_table_.insert(
           {workers[i],
-           new RdmaChannel(rdma_adapter_, local_worker_, workers[i])});
+           new RdmaChannel(rdma_adapter_, local_worker_, workers[i], channel_cache_,
+           cq)});
     }
   }
+  LOG(INFO) << "local_worker: " << local_worker_ << " other_channel:" << other_worker_name;
 }
 
 // Setup Rdma channels between peers.
 // This is done at the beginning of the server setup.
 
 void RdmaMgr::SetupChannels() {
+  LOG(INFO) << "channel_table_size:" << channel_table_.size();
   for (const auto& p : channel_table_) {
     string worker_name = p.first;
     RDMA_LOG(2) << "Connecting to remote node " << worker_name;
+    LOG(INFO) << "Connecting to remote node " << worker_name;
     RdmaChannel* rc = p.second;
     GetRemoteAddressRequest req;
     GetRemoteAddressResponse resp;
     // get the channel cache
     SharedGrpcChannelPtr client_channel =
         channel_cache_->FindWorkerChannel(worker_name);
+
+    CHECK(client_channel != nullptr) << "target:" << worker_name << " client_channel is null!";
+
     GrpcVerbsClient* client = new GrpcVerbsClient(client_channel);
     CHECK(client != nullptr) << "No worker known as " << worker_name;
 
     // setting up request
     req.set_host_name(local_worker_);
-    Channel* channel_info = req.mutable_channel();
+    ChannelInfo* channel_info = req.mutable_channel();
     channel_info->set_lid(rc->self_.lid);
     channel_info->set_qpn(rc->self_.qpn);
     channel_info->set_psn(rc->self_.psn);
@@ -101,12 +133,21 @@ void RdmaMgr::SetupChannels() {
         rc->SetRemoteAddress(ra, false);
         rc->Connect();
         int i = 0;
-        int idx[] = {1, 0};
+        // int idx[] = {1, 0};
+        // {1, 0, 3, 2, 5, 4}
+        int idx[RdmaChannel::kNumMessageBuffers + 1];
+        for (auto k = 0; k < RdmaChannel::kNumMessageBuffers; k = k + 2) {
+        // for (auto k=0; k<2; k=k+2) {
+          idx[k] = k+1;
+          idx[k+1] = k;
+        }
+
         for (const auto& mr : resp.mr()) {
           // the connections are crossed, i.e.
           // local tx_message_buffer <---> remote rx_message_buffer_
           // local rx_message_buffer <---> remote tx_message_buffer_
           // hence idx[] = {1, 0}.
+          // LOG(ERROR) << "resp index:" << i << " local message_buffer idx:" << idx[i];
           RdmaMessageBuffer* rb = rc->message_buffers_[idx[i]];
           RemoteMR rmr;
           rmr.remote_addr = mr.remote_addr();
@@ -134,10 +175,11 @@ void RdmaMgr::SetupChannels() {
 bool RdmaMgr::ConnectivityCheck() {
   int i, rcnt = 0, scnt = 0;
 
+  int num_remote_workers = 0;
   for (const auto& p : channel_table_) {
+    num_remote_workers++;
     string worker_name = p.first;
     RdmaChannel* rc = p.second;
-
     VLOG(2) << "Ping to " << worker_name;
     CHECK(rc->PingPostSend() == 0) << "Couldn't post send  to " << worker_name
                                    << " with error: " << std::strerror(errno);
@@ -145,38 +187,50 @@ bool RdmaMgr::ConnectivityCheck() {
       rc->Recv();
     }
   }
+  LOG(INFO) << "PingPostSend num_remote_workers:" << num_remote_workers;
 
-  while (rcnt < num_remote_workers_ || scnt < num_remote_workers_) {
-    int ne;
-    do {
-      ne = ibv_poll_cq(rdma_adapter_->cq_, 2 * num_remote_workers_,
-                       rdma_adapter_->wc_);
-      CHECK(ne >= 0) << "poll CQ failed " << ne << "with error"
-                     << std::strerror(errno);
-    } while (ne < 1);
-
-    for (i = 0; i < ne; ++i) {
-      ibv_wc_status s = rdma_adapter_->wc_[i].status;
-      // recv complete
-      if ((int)rdma_adapter_->wc_[i].wr_id == RdmaChannel::kPingRecvWrid) {
-        CHECK(s == IBV_WC_SUCCESS)
-            << ": " << ibv_wc_status_str(rdma_adapter_->wc_[i].status) << "("
-            << rdma_adapter_->wc_[i].status << ") for PING_RECV_WRID";
-        ++rcnt;
-        // send complete
-      } else {
-        RdmaChannel* rc =
-            reinterpret_cast<RdmaChannel*>(rdma_adapter_->wc_[i].wr_id);
-        CHECK(s == IBV_WC_SUCCESS)
-            << ": " << ibv_wc_status_str(rdma_adapter_->wc_[i].status) << "("
-            << rdma_adapter_->wc_[i].status << ") to " << rc->remote_name_;
-        ++scnt;
-      }
-    }  // for
+  while (rcnt < num_remote_workers || scnt < num_remote_workers) {
+    for (int j = 0; j < rdma_adapter_->cq_nums_; j++) {
+      int ne = 0;
+      int retry_times = 0;
+      do {
+        ne = ibv_poll_cq(rdma_adapter_->cq_vec_[j], 2 * num_remote_workers_,
+                        rdma_adapter_->wc_vec_[j]);
+        CHECK(ne >= 0) << "poll CQ failed " << ne << "with error"
+                      << std::strerror(errno);
+        retry_times ++;
+        if (retry_times > 10) {
+          break;
+        }
+      } while (ne < 1);
+      for (i = 0; i < ne; ++i) {
+        ibv_wc_status s = rdma_adapter_->wc_vec_[j][i].status;
+        // recv complete
+        if ((int)rdma_adapter_->wc_vec_[j][i].wr_id == RdmaChannel::kPingRecvWrid) {
+          CHECK(s == IBV_WC_SUCCESS)
+              << ": " << ibv_wc_status_str(rdma_adapter_->wc_vec_[j][i].status) << "("
+              << rdma_adapter_->wc_vec_[j][i].status << ") for PING_RECV_WRID";
+          ++rcnt;
+          // send complete
+        } else {
+          RdmaChannel* rc =
+              reinterpret_cast<RdmaChannel*>(rdma_adapter_->wc_vec_[j][i].wr_id);
+          CHECK(s == IBV_WC_SUCCESS)
+              << ": " << ibv_wc_status_str(rdma_adapter_->wc_vec_[j][i].status) << "("
+              << rdma_adapter_->wc_vec_[j][i].status << ") to " << rc->remote_name_;
+          ++scnt;
+        }
+      }  // for
+    }
   }    // while
+  LOG(INFO) << "ConnectivityCheck:"
+            << num_remote_workers
+            << " rcnt:" << rcnt
+            << " scnt:" << scnt;
+
   CHECK(rcnt == scnt) << "Connectivity check failed!";
   rdma_adapter_->StartPolling();
-  return (num_remote_workers_ == rcnt) && (num_remote_workers_ == scnt);
+  return rcnt == scnt;
 }
 
 RdmaMgr::~RdmaMgr() {
@@ -192,8 +246,46 @@ RdmaMgr::~RdmaMgr() {
 //   channel object that is connected to the named peer.
 RdmaChannel* RdmaMgr::FindChannel(const string& name) {
   ChannelTable::iterator iter = channel_table_.find(name);
-  CHECK(iter != channel_table_.end());
+  CHECK(iter != channel_table_.end())
+    << "name:" << name
+    << "table_name like:"
+    << channel_table_.begin()->first;
   return iter->second;
+}
+
+bool RdmaMgr::NotifyAsyncAllocatorTest() {
+  for (const auto& p : channel_table_) {
+    string worker_name = p.first;
+    LOG(INFO) << "NotifyAsyncAllocator to remote node " << worker_name;
+    RdmaChannel* rc = p.second;
+    // 请 ps 端进行态空间分配，并同步静态空间给我
+    rc->PleSendOrCheck();
+    LOG(INFO) << "NotifyAsyncAllocator PleSendOrCheck to remote node"
+              << worker_name
+              << " Succeed!";
+  }
+  return true;
+}
+
+bool RdmaMgr::NotifyAsyncAllocator() {
+  for (const auto& p : channel_table_) {
+    string worker_name = p.first;
+    LOG(INFO) << "NotifyAsyncAllocator to remote node " << worker_name;
+    RdmaChannel* rc = p.second;
+    // 分配静态空间并且同步自身的静态空间给对方
+    // TODO(wuyongyu02): change to large MR
+    rc->InitAndSetDriverStatus();
+    LOG(INFO) << "NotifyAsyncAllocator InitAndSetDriverStatus to remote node "
+              << worker_name
+              << " Succeed!";
+    // 请 ps 端进行态空间分配，并同步静态空间给我
+    rc->PleSendOrCheck();
+    LOG(INFO) << "NotifyAsyncAllocator PleSendOrCheck to remote node"
+              << worker_name
+              << " Succeed!";
+
+  }
+  return true;
 }
 
 bool IsGDRAvailable() {
@@ -236,8 +328,9 @@ int TryToReadNumaNode(ibv_device* device) {
   if (strings::safe_strto32(content, &value)) {
     if (value < 0) {
       LOG(INFO) << "Successful NUMA node read from SysFS had negative value ("
-                << value << "), but there must be at least one NUMA node"
-                            ", so returning NUMA node zero";
+                << value
+                << "), but there must be at least one NUMA node"
+                   ", so returning NUMA node zero";
       return 0;
     }
     LOG(INFO) << "NUMA node for device: " << device->name << " is " << value;
@@ -254,26 +347,35 @@ void MRDeleter(ibv_mr* mr) {
 }
 
 void RdmaMgr::InitAllocators() {
-  static std::once_flag flag;
-  std::call_once(
-      flag, [this]() { RdmaMemoryMgr::Singleton().pd_ = rdma_adapter_->pd_; });
+  // static std::once_flag flag;
+  // std::call_once(
+  //     flag, [this]() { RdmaMemoryMgr::Singleton().pd_ = rdma_adapter_->pd_; });
 }
 
 /*static*/ void RdmaMgr::RegMemVisitors() {
+  // SubAllocator::Visitor alloc_visitor = [](void* ptr, int numa_node,
+  //                                          size_t num_bytes) {
+  //   LOG(INFO) << "RdmaMgr alloc_visitor";
+  //   RdmaMemoryMgr::Singleton().InsertMemoryRegion(
+  //       ptr, num_bytes, strings::StrCat("CPU:", numa_node));
+  // };
+  // SubAllocator::Visitor free_visitor = [](void* ptr, int numa_node,
+  //                                         size_t num_bytes) {
+  //   RdmaMemoryMgr::Singleton().EvictMemoryRegion(ptr, num_bytes);
+  // };
+
+  // LOG(INFO) << " ProcessState::singleton()->AddCPUAllocVisitor...";
+  // ProcessState::singleton()->AddCPUAllocVisitor(alloc_visitor);
+  // ProcessState::singleton()->AddCPUFreeVisitor(free_visitor);
+
+#if GOOGLE_CUDA
   SubAllocator::Visitor alloc_visitor = [](void* ptr, int numa_node,
                                            size_t num_bytes) {
-    RdmaMemoryMgr::Singleton().InsertMemoryRegion(
-        ptr, num_bytes, strings::StrCat("CPU:", numa_node));
+    LOG(ERROR) << "Rdma For GPU is not supported!";
   };
   SubAllocator::Visitor free_visitor = [](void* ptr, int numa_node,
                                           size_t num_bytes) {
-    RdmaMemoryMgr::Singleton().EvictMemoryRegion(ptr, num_bytes);
   };
-
-  ProcessState::singleton()->AddCPUAllocVisitor(alloc_visitor);
-  ProcessState::singleton()->AddCPUFreeVisitor(free_visitor);
-
-#if GOOGLE_CUDA
   GPUProcessState::singleton()->AddGpuHostAllocVisitor(0, alloc_visitor);
   GPUProcessState::singleton()->AddGpuHostFreeVisitor(0, free_visitor);
 
@@ -289,8 +391,8 @@ void RdmaMgr::InitAllocators() {
 
     SubAllocator::Visitor cuda_alloc_visitor = [](void* ptr, int gpu_id,
                                                   size_t num_bytes) {
-      RdmaMemoryMgr::Singleton().InsertMemoryRegion(
-          ptr, num_bytes, strings::StrCat("GPU:", gpu_id));
+      // RdmaMemoryMgr::Singleton().InsertMemoryRegion(
+      //     ptr, num_bytes, strings::StrCat("GPU:", gpu_id));
     };
     GPUProcessState::singleton()->AddGPUAllocVisitor(bus_id,
                                                      cuda_alloc_visitor);
@@ -300,3 +402,5 @@ void RdmaMgr::InitAllocators() {
 }
 
 }  // end namespace tensorflow
+
+#endif

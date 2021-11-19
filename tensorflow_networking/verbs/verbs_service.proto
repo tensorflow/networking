@@ -26,7 +26,7 @@ option java_package = "org.tensorflow.contrib.verbs";
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-message Channel {
+message ChannelInfo {
   int32 lid = 1;
   int32 qpn = 2;
   int32 psn = 3;
@@ -40,14 +40,52 @@ message MemoryRegion {
 }
 message GetRemoteAddressRequest {
   string host_name = 1;
-  Channel channel = 2;
+  ChannelInfo channel = 2;
   repeated MemoryRegion mr = 3;
 }
 
 message GetRemoteAddressResponse {
   string host_name = 1;
-  Channel channel = 2;
+  ChannelInfo channel = 2;
   repeated MemoryRegion mr = 3;
+}
+
+message DriverMessageItem {
+  enum DriverStatus {
+    DRIVER_INIT = 0;
+    RPC_0 = 1;
+    RPC_1 = 2;
+    DATA_NOT_READY = 4;
+    DATA_READY = 5;
+    DRIVER_ERROR = 6;
+  }
+  uint32 unique_id = 1;
+  string parsed_key = 2;
+  uint64 remote_addr = 3;
+  uint32 rkey = 4;
+  DriverStatus status=5;
+  int32 allocate_bytes=6;
+  bool meta_changed=7;
+}
+
+message DriverMessageReq {
+  string host_name = 1;
+  repeated DriverMessageItem item = 2;
+}
+
+message DriverMessageResp {
+  string host_name = 1;
+  repeated DriverMessageItem item = 2;
+}
+
+message PleSendOrCheckReq {
+  string host_name = 1;
+}
+
+
+message PleSendOrCheckResp {
+  string host_name = 1;
+  bool is_ok = 2;
 }
 
 message ErrorStatusProto {
@@ -65,4 +103,8 @@ message ErrorStatusProto {
 service VerbsService {
   rpc GetRemoteAddress(GetRemoteAddressRequest)
       returns (GetRemoteAddressResponse);
+  rpc ReqDriverMessage(DriverMessageReq)
+      returns (DriverMessageResp);
+  rpc ReqPleSendOrCheck(PleSendOrCheckReq)
+      returns (PleSendOrCheckResp);
 }

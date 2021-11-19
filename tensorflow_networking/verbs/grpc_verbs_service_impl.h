@@ -32,7 +32,7 @@ namespace tensorflow {
 namespace grpc {
 
 // Implementation of `tensorflow.VerbsService`, based on the
-// definition in "//tensorflow_networking/verbs/verbs_service.proto",
+// definition in "//tensorflow/contrib/verbs/verbs_service.proto",
 // and the gRPC generated stub and service classes.
 // See the proto file for the definition of methods and messages.
 class VerbsService GRPC_FINAL {
@@ -43,6 +43,13 @@ class VerbsService GRPC_FINAL {
     virtual ::grpc::Status GetRemoteAddress(
         ::grpc::ClientContext* context, const GetRemoteAddressRequest& request,
         GetRemoteAddressResponse* response) = 0;
+    virtual ::grpc::Status ReqDriverMessage(
+        ::grpc::ClientContext* context, const DriverMessageReq& request,
+        DriverMessageResp* response) = 0;
+
+    virtual ::grpc::Status ReqPleSendOrCheck(
+        ::grpc::ClientContext* context, const PleSendOrCheckReq& request,
+        PleSendOrCheckResp* response) = 0;
   };
   class Stub GRPC_FINAL : public StubInterface {
    public:
@@ -51,9 +58,21 @@ class VerbsService GRPC_FINAL {
         ::grpc::ClientContext* context, const GetRemoteAddressRequest& request,
         GetRemoteAddressResponse* response) GRPC_OVERRIDE;
 
+    ::grpc::Status ReqDriverMessage(
+        ::grpc::ClientContext* context, 
+        const DriverMessageReq& request,
+        DriverMessageResp* response) GRPC_OVERRIDE;
+    
+    ::grpc::Status ReqPleSendOrCheck(
+        ::grpc::ClientContext* context, 
+        const PleSendOrCheckReq& request,
+        PleSendOrCheckResp* response) GRPC_OVERRIDE;
+   
    private:
     std::shared_ptr< ::grpc::ChannelInterface> channel_;
     const ::grpc::internal::RpcMethod rpcmethod_GetRemoteAddress_;
+    const ::grpc::internal::RpcMethod rpcmethod_ReqDriverMessage_;
+    const ::grpc::internal::RpcMethod rpcmethod_ReqPleSendOrCheck_;
   };
   static std::unique_ptr<Stub> NewStub(
       const std::shared_ptr< ::grpc::ChannelInterface>& channel,
@@ -71,6 +90,25 @@ class VerbsService GRPC_FINAL {
       ::grpc::Service::RequestAsyncUnary(0, context, request, response,
                                          new_call_cq, notification_cq, tag);
     }
+
+    void RequestReqDriverMessage(
+        ::grpc::ServerContext* context, DriverMessageReq* request,
+        ::grpc::ServerAsyncResponseWriter<DriverMessageResp>* response,
+        ::grpc::CompletionQueue* new_call_cq,
+        ::grpc::ServerCompletionQueue* notification_cq, void* tag) {
+      ::grpc::Service::RequestAsyncUnary(1, context, request, response,
+                                         new_call_cq, notification_cq, tag);
+    }
+
+    void RequestReqPleSendOrCheck(
+        ::grpc::ServerContext* context, PleSendOrCheckReq* request,
+        ::grpc::ServerAsyncResponseWriter<PleSendOrCheckResp>* response,
+        ::grpc::CompletionQueue* new_call_cq,
+        ::grpc::ServerCompletionQueue* notification_cq, void* tag) {
+      ::grpc::Service::RequestAsyncUnary(2, context, request, response,
+                                         new_call_cq, notification_cq, tag);
+    }
+
   };
 };
 

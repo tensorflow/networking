@@ -16,15 +16,18 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_SERVICE_H_
 #define TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_SERVICE_H_
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "grpcpp/alarm.h"
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/server_builder.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
+#include "tensorflow_networking/verbs/rdma.h"
+#include "tensorflow_networking/verbs/rdma_mgr.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/lib/core/refcount.h"
-#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
-#include "tensorflow_networking/verbs/rdma_mgr.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace tensorflow {
 
@@ -44,11 +47,23 @@ class GrpcVerbsService : public AsyncServiceInterface {
       WorkerCall<GetRemoteAddressRequest, GetRemoteAddressResponse>* call);
   Status GetRemoteAddressSync(const GetRemoteAddressRequest* request,
                               GetRemoteAddressResponse* response);
+  
+  void ReqDriverMessageHandler(
+    WorkerCall<DriverMessageReq, DriverMessageResp>* call);
+
+  void ReqPleSendOrCheckHandler(
+    WorkerCall<PleSendOrCheckReq, PleSendOrCheckResp>* call);
+
+  Status ReqDriverMessageSync(const DriverMessageReq* request,
+                              DriverMessageResp* response);
+  
+  Status ReqPleSendOrCheckSync(const PleSendOrCheckReq* request,
+                              PleSendOrCheckResp* response);
 
   ::grpc::ServerCompletionQueue* cq_;
   grpc::VerbsService::AsyncService verbs_service_;
   mutex shutdown_mu_;
-  bool is_shutdown_ TF_GUARDED_BY(shutdown_mu_);
+  bool is_shutdown_ GUARDED_BY(shutdown_mu_);
   ::grpc::Alarm* shutdown_alarm_;
   // not owned
   RdmaMgr* rdma_mgr_;
@@ -63,4 +78,5 @@ void SetNewVerbsService(GrpcVerbsService** handle, const WorkerEnv* worker_env,
 
 }  // namespace tensorflow
 
+#endif  // TENSORFLOW_USE_VERBS
 #endif  // TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_SERVICE_H_

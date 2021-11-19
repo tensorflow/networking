@@ -16,11 +16,11 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_CLIENT_H_
 #define TENSORFLOW_CONTRIB_VERBS_GRPC_VERBS_CLIENT_H_
 
+#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow_networking/verbs/grpc_verbs_service_impl.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 
 namespace tensorflow {
 
@@ -36,6 +36,19 @@ class GrpcVerbsClient {
                           GetRemoteAddressResponse* response);
   Status GetRemoteAddress(const GetRemoteAddressRequest* request,
                           GetRemoteAddressResponse* response);
+
+  Status ReqDriverMessage(CallOptions* call_options,
+                          const DriverMessageReq* request,
+                          DriverMessageResp* response);
+  Status ReqDriverMessage(const DriverMessageReq* request,
+                          DriverMessageResp* response);
+
+  Status ReqPleSendOrCheck(CallOptions* call_options,
+                          const PleSendOrCheckReq* request,
+                          PleSendOrCheckResp* response);
+
+  Status ReqPleSendOrCheck(const PleSendOrCheckReq* request,
+                          PleSendOrCheckResp* response);
 
  private:
   std::unique_ptr<grpc::VerbsService::Stub> stub_;

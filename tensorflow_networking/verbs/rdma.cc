@@ -13,14 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include <fcntl.h>
 #include <cstdlib>
+#include <regex>
+#include <bitset>
+#include <inttypes.h>
+#include <sstream>
+#include <utility>
+#include <set>
 
+#include "tensorflow_networking/verbs/rdma.h"
+#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/common_runtime/process_util.h"
-#include "tensorflow_networking/verbs/rdma.h"
-#include "tensorflow_networking/verbs/verbs_service.pb.h"
 #if GOOGLE_CUDA
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_util.h"
@@ -54,6 +62,12 @@ string MessageTypeToString(RdmaMessageType rmt) {
     case RDMA_MESSAGE_TENSOR_REQUEST:
       return "RDMA_MESSAGE_TENSOR_REQUEST";
       break;
+    case RDMA_MESSAGE_DRIVER_BEGIN:
+      return "RDMA_MESSAGE_DRIVER_BEGIN";
+      break;
+    case RDMA_MESSAGE_ERROR_STATUS:
+      return "RDMA_MESSAGE_ERROR_STATUS";
+      break;
     default:
       return "UNKNOWN MESSAGE";
   }
@@ -79,6 +93,8 @@ string get_env_var(char const* var_name) {
 ibv_context* open_device(ibv_device* ibv_dev) {
   ibv_context* context = ibv_open_device(ibv_dev);
 
+  LOG(INFO) << "RDMA context->num_comp_vectors:" << context->num_comp_vectors;
+
   CHECK(context) << "Open context failed for " << ibv_get_device_name(ibv_dev);
   return context;
 }
@@ -98,6 +114,13 @@ int get_dev_active_port_count(ibv_device* device) {
   CHECK(context) << "Open context failed for " << ibv_get_device_name(device);
   rc = ibv_query_device(context, &device_att);
   CHECK(!rc) << "Failed to query the device";
+  LOG(INFO) << "[RDMA Device Info] "
+            << " max_qp:" << device_att.max_qp
+            << " max_cq:" << device_att.max_cq
+            << " max_pd:" << device_att.max_pd
+            << " max_mr:" << device_att.max_mr
+            << " max_mr_size:" << device_att.max_mr_size;
+
 
   for (port_index = 1; port_index <= device_att.phys_port_cnt; port_index++) {
     rc = ibv_query_port(context, port_index, &port_attr);
@@ -398,128 +421,348 @@ ibv_pd* alloc_protection_domain(ibv_context* context) {
   return pd;
 }
 
+Chunk::Chunk(struct ibv_pd* pd) :
+    pd_(pd), allocate_size_(0), curr_size_(0), empty_size_(0),
+    offset_(0), total_waste_size_(0), total_realloc_size_(0) {
+  chunk_addr_size = VerbsEnvRegistrar::Instance()->RdmaChunkSize();
+  if (EIGEN_MAX_ALIGN_BYTES > 0) {
+    int ratio = (chunk_addr_size + EIGEN_MAX_ALIGN_BYTES) / EIGEN_MAX_ALIGN_BYTES;
+    chunk_addr_size = ratio * EIGEN_MAX_ALIGN_BYTES;
+  }
+  LOG(INFO) << "chunk size:" 
+            << chunk_addr_size 
+            << " EIGEN_MAX_ALIGN_BYTES:"
+            << EIGEN_MAX_ALIGN_BYTES;
+}
+
+void Chunk::FreeChunk() {
+  LOG(INFO) << "delete Chunk";
+  for (auto& it : mrs_) {
+    ibv_dereg_mr(it);
+  }
+  for (auto& it : chunk_addrs_) {
+    free(it);
+  }
+}
+
+Chunk::~Chunk() { }
+
+void Chunk::Alloc(size_t size, void** p, ibv_mr** mr, size_t realloc_size) {
+  mutex_lock l(alloc_mu_);
+  size_t align_size = size;
+  if (EIGEN_MAX_ALIGN_BYTES > 0) {
+    int ratio = (size + EIGEN_MAX_ALIGN_BYTES - 1) / EIGEN_MAX_ALIGN_BYTES;
+    align_size = ratio * EIGEN_MAX_ALIGN_BYTES;
+  }
+  // empty addr need alloc new data
+  if (empty_size_ < align_size) {
+    size_t malloc_size = (align_size + chunk_addr_size - 1) / chunk_addr_size * chunk_addr_size;
+    curr_size_ += malloc_size;
+    total_waste_size_ += empty_size_;
+    total_realloc_size_ += realloc_size;
+    LOG(INFO) << "RDMA Allocate Memory: " << curr_size_ << " Bytes " << total_waste_size_ << " " << total_realloc_size_;
+    offset_ = 0;
+    empty_size_ = malloc_size;
+    size_t allocate_size= 0;
+    ib_malloc((void**)&new_p_, &allocate_size, malloc_size, 
+              EIGEN_MAX_ALIGN_BYTES);
+    new_mr_ = ibv_reg_mr(pd_, new_p_, malloc_size,
+                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    mrs_.emplace_back(new_mr_);
+    chunk_addrs_.emplace_back(new_p_);
+  }
+  *p = (void*)(((char *)new_p_) + offset_);
+  empty_size_ -= align_size;
+  *mr = new_mr_;
+  offset_ += align_size;
+}
+
 RdmaAdapter::RdmaAdapter(const WorkerEnv* worker_env)
     : context_(open_device(set_device())),
       params_(params_init(context_)),
       pd_(alloc_protection_domain(context_)),
       worker_env_(worker_env) {
-  event_channel_ = ibv_create_comp_channel(context_);
-  CHECK(event_channel_) << "Failed to create completion channel";
-  cq_ = ibv_create_cq(context_, MAX_CONCURRENT_WRITES * 2, NULL, event_channel_,
-                      0);
-  CHECK(cq_) << "Failed to create completion queue";
-  CHECK(!ibv_req_notify_cq(cq_, 0)) << "Failed to request CQ notification";
+  recv_chunk_ =  new Chunk(pd_);
+  cq_nums_ = VerbsEnvRegistrar::Instance()->RdmaCqNums();
+  wc_vec_ = new ibv_wc*[cq_nums_];
+  cq_vec_ = new ibv_cq*[cq_nums_];
+  event_channel_vec_ = new ibv_comp_channel*[cq_nums_];
+  for (int i = 0; i < cq_nums_; i++) {
+    wc_vec_[i] = new ibv_wc[MAX_CONCURRENT_WRITES * 2];
+    event_channel_vec_[i] = ibv_create_comp_channel(context_);
+    CHECK(event_channel_vec_[i]) << "Failed to create of "  << i
+                                 << " completion channel";
+    cq_vec_[i] = ibv_create_cq(context_, MAX_CONCURRENT_WRITES * 2, NULL,
+                               event_channel_vec_[i], 0);
+    CHECK(cq_vec_[i]) << "Failed to create of " << i << " completion queue";
+    CHECK(!ibv_req_notify_cq(cq_vec_[i], 0))
+        << "Failed to request CQ notification";
+  }
+  LOG(INFO) << "RdmaCQpoolSize:"
+            << VerbsEnvRegistrar::Instance()->RdmaCQpoolSize();
+  pool_ = new thread::ThreadPool(Env::Default(), ThreadOptions(),
+      "process_wr_impl", VerbsEnvRegistrar::Instance()->RdmaCQpoolSize(),
+      false, nullptr);
 }
 
 RdmaAdapter::~RdmaAdapter() {
-  polling_thread_.reset();
-  CHECK(!ibv_destroy_cq(cq_)) << "Failed to destroy CQ";
-  CHECK(!ibv_destroy_comp_channel(event_channel_))
-      << "Failed to destroy channel";
+  for (int i = 0; i < cq_nums_; i++) {
+    polling_thread_vec_[i].reset();
+  }
+  for (int i = 0; i < cq_nums_; i++) {
+    CHECK(!ibv_destroy_cq(cq_vec_[i])) << "Failed to destroy CQ";
+    CHECK(!ibv_destroy_comp_channel(event_channel_vec_[i]))
+        << "Failed to destroy channel";
+  }
   CHECK(!ibv_dealloc_pd(pd_)) << "Failed to deallocate PD";
   CHECK(!ibv_close_device(context_)) << "Failed to release context";
+  recv_chunk_->FreeChunk();
+  delete recv_chunk_;
+  recv_chunk_ = nullptr;
 }
 
 void RdmaAdapter::StartPolling() {
-  polling_thread_.reset(Env::Default()->StartThread(
-      ThreadOptions(), "RdmaAdapterCQThread", [this] { Process_CQ(); }));
+  for (int i = 0; i < cq_nums_; i++) {
+    polling_thread_vec_.emplace_back(Env::Default()->StartThread(
+      ThreadOptions(), "RdmaAdapterCQThread",
+      [this, i] { Pool_Process_CQ(i); }));
+  }
   VLOG(2) << "Start RdmaAdapter: " << name();
 }
 
 string RdmaAdapter::name() const { return string(context_->device->name); }
 
-// Function to process incoming messages
-// There are two types of messages:
-// 1. IBV_WC_RECV_RDMA_WITH_IMM (receive)
-// 2. IBV_WC_RDMA_WRITE (send))
-void RdmaAdapter::Process_CQ() {
-  while (true) {
-    ibv_cq* cq;
-    void* cq_context;
-    CHECK(!ibv_get_cq_event(event_channel_, &cq, &cq_context));
-    CHECK(cq == cq_);
-    ibv_ack_cq_events(cq, 1);
-    CHECK(!ibv_req_notify_cq(cq_, 0));
+void RdmaAdapter::Process_WR(ibv_wc wc_, int cq_num) {
+  if (wc_.status != IBV_WC_SUCCESS) {
+      return;
+    }
+  CHECK(wc_.status == IBV_WC_SUCCESS)
+      << "Failed status \n"
+      << ibv_wc_status_str(wc_.status) << " " << wc_.status << " "
+      << static_cast<int>(wc_.wr_id) << " " << wc_.vendor_err;
+  if (wc_.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+    RdmaChannel* rc = reinterpret_cast<RdmaChannel*>(wc_.wr_id);
+    if (rc == nullptr) {
+      LOG(FATAL) << "Process_WR Faild wc_.wr_id:" << wc_.wr_id
+                 << " cq_num:" << cq_num;
+      return;
+    }
+    // put back a recv wr.
+    rc->Recv();
+    // imm_data is the index of RX buffer in the buffer table.
+    uint32_t imm_data = wc_.imm_data;
+    RdmaMessageBuffer* rb;
+    RdmaMessage rm;
 
-    int ne =
-        ibv_poll_cq(cq_, MAX_CONCURRENT_WRITES * 2, static_cast<ibv_wc*>(wc_));
-    CHECK_GE(ne, 0);
-    for (int i = 0; i < ne; ++i) {
-      CHECK(wc_[i].status == IBV_WC_SUCCESS)
-          << "Failed status \n"
-          << ibv_wc_status_str(wc_[i].status) << " " << wc_[i].status << " "
-          << static_cast<int>(wc_[i].wr_id) << " " << wc_[i].vendor_err;
-      if (wc_[i].opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-        RdmaChannel* rc = reinterpret_cast<RdmaChannel*>(wc_[i].wr_id);
-        // put back a recv wr.
-        rc->Recv();
-        // imm_data is the index of RX buffer in the buffer table.
-        uint32_t imm_data = wc_[i].imm_data;
-        RdmaMessageBuffer* rb;
-        RdmaMessage rm;
+    if (imm_data > RDMA_IMM_MAX_REQUEST_ID && imm_data <= RDMA_IMM_DATA_ACK) {
+      // receive an ack to a message
+      int pair_index = imm_data - RDMA_IMM_MAX_REQUEST_ID -1;
+      int buffer_index = 2 * pair_index;
+      rb = rc->message_buffers()[buffer_index];
+      rb->SetBufferStatus(remote, idle);
+      rb->SendNextItem();
+      return;
+    }
 
-        if (imm_data == RDMA_IMM_DATA_ACK) {
-          // receive an ack to a message
-          rb = rc->tx_message_buffer_;
-          rb->SetBufferStatus(remote, idle);
-          rb->SendNextItem();
-          continue;
+    if (imm_data <= RDMA_IMM_MAX_REQUEST_ID) {
+      // receive a tensor RDMA write
+      uint32_t request_index = imm_data;
+      if (imm_data < RDMA_IMM_MIN_SENDMGR_BASE) {
+        RdmaTensorRequest* request = rc->GetTensorRequest(request_index);
+        if (request == nullptr) {
+          LOG(INFO) << "Normal request_index:"
+                    << request_index
+                    << " , Normal request is done by SendDriverMgr";
+          return;
+        }
+        RDMA_LOG(1) << "DoNormal request_index:" << request_index;
+        request->RecvTensorContent();
+      } else {
+        // RecvSendDriver
+        const auto& tensors_uid_parsed_key =
+            rc->channel_record_->GetChannelTensorsUidParsedkey();
+        const auto& it = tensors_uid_parsed_key.find(imm_data);
+        if (it == tensors_uid_parsed_key.end()) {
+          LOG(FATAL) << "RdmaTensorRequest Not find parsed_key:"
+                    << it->second;
+        }
+        const auto& parsed_key = it->second;
+        bool has_data = false;
+        std::shared_ptr<DriverEntry> entry_ptr =
+            rc->rdma_send_driver_mgr_->GetDriverEntry(parsed_key, &has_data);
+
+        const auto& tensors_meta_data =
+            rc->channel_record_->GetChannelTensorsMetaData();
+        const auto& meta = tensors_meta_data.find(parsed_key);
+        if (meta == tensors_meta_data.end()) {
+          LOG(FATAL)
+              << "meta is not find in rc->channel_record_->tensors_meta_data_";
         }
 
-        if (imm_data <= RDMA_IMM_MAX_REQUEST_ID) {
-          // receive a tensor RDMA write
-          uint32_t request_index = imm_data;
-          RdmaTensorRequest* request = rc->GetTensorRequest(request_index);
-          request->RecvTensorContent();
-          continue;
+        bool can_memcpy = DataTypeCanUseMemcpy(meta->second.data_type_);
+        if (!has_data) {
+          // parsed DriverPrefixMessage
+          DriverPrefixMessage driver_prefix =
+              DriverPrefixMessage::ParseDriverPrefixMessage(
+                  (void*)entry_ptr->addr_, meta->second.meta_changed_);
+          Tensor* val;
+          void* entry_tensor_addr = nullptr;
+          // get rama's offset addr of Tensor 
+          if (meta->second.meta_changed_) {
+            entry_tensor_addr = (void*)(entry_ptr->addr_ +
+                DriverPrefixMessage::kPrefixMessageTotalBytes);
+          } else {
+            entry_tensor_addr = (void*)(entry_ptr->addr_ +
+                DriverPrefixMessage::CkPrefixMessageTotalBytes);
+          }
+          if (can_memcpy) {
+            // tensor can use zero-copy
+            auto fake_allocator = new FakeAllocator(entry_tensor_addr);
+            if (meta->second.meta_changed_) {
+              val = new Tensor(fake_allocator, 
+                               meta->second.data_type_,
+                               driver_prefix.tensor_shape_);
+            } else {
+              val = new Tensor(fake_allocator, 
+                               meta->second.data_type_,
+                               meta->second.tensor_shape_);
+            }
+            // memcpy(DMAHelper::base(val), entry_tensor_addr, val->TotalBytes());
+          } else {
+            // proto should not used zero-copy
+            if (meta->second.meta_changed_) {
+              val = new Tensor(meta->second.data_type_,
+                               driver_prefix.tensor_shape_);
+            } else {
+              val = new Tensor(meta->second.data_type_,
+                               meta->second.tensor_shape_);
+            }
+            TensorProto proto;
+            CHECK(ParseProtoUnlimited(&proto,entry_tensor_addr,
+                                      driver_prefix.tensor_bytes_))
+                << " fail to parse proto from array";
+            if (proto.dtype() > 0 && proto.dtype() <= DataType_MAX) {
+              Tensor parsed(proto.dtype());
+              if (parsed.FromProto(cpu_allocator(), proto)) {
+                *val = std::move(parsed);
+              }
+            }
+          }
+          Status s = Status::OK();
+          bool is_dead = driver_prefix.is_dead_;
+          int64 recv_micros = 0;
+          Rendezvous::Args send_args = Rendezvous::Args();
+          rc->local_driver_buffer_mgr_->QueueRdmaSave(parsed_key,
+              send_args, val, is_dead, recv_micros);
+          // if (val != nullptr) {
+          //   delete val;
+          //   val = nullptr;
+          // }
+        } else {
+          // When recv a SendDriverData which means that :
+          // Localrecv SendDriver is Ready.
+          LOG(FATAL) << "Local recv SendDriver Data is not ready"
+                    << " has_data:" << has_data;
         }
+      }
+      return;
+    }
 
-        // receive a control message
-        rb = rc->rx_message_buffer_;
-        RdmaMessage::ParseMessage(rm, rb->buffer_);
-        RdmaMessageBuffer::SendAck(rc);
-        RDMA_LOG(1) << "Step 0x" << std::hex << rm.step_id_ << std::dec
-                    << ": Received " << MessageTypeToString(rm.type_) << " "
-                    << "#" << rm.request_index_ << ": " << rm.name_;
+    // receive a control message
+    int pair_index = imm_data - RDMA_IMM_DATA_ACK -1;
+    int buffer_index = 2 * pair_index + 1;
+    rb = rc->message_buffers()[buffer_index];
+    RdmaMessage::ParseMessage(rm, rb->buffer_);
+    RdmaMessageBuffer::SendAck(rc, pair_index+1);
+    RDMA_LOG(1) << "Step 0x" << std::hex << rm.step_id_ << std::dec
+                << ": Received " << MessageTypeToString(rm.type_) << " "
+                << "#" << rm.request_index_ << ": " << rm.name_;
+    RDMA_LOG(1) << "pair_index imm_data:" << imm_data
+              << " Process_WR rm type:" << MessageTypeToString(rm.type_);
 
-        if (rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) {
-          RdmaTensorResponse* response = rc->AddTensorResponse(rm);
-          response->Start();
-        } else if (rm.type_ == RDMA_MESSAGE_META_DATA_UPDATE) {
-          RdmaTensorRequest* request = rc->GetTensorRequest(rm.request_index_);
-          request->RecvTensorMetaData(rm.data_type_, rm.tensor_shape_,
+    if (rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) {
+      RdmaTensorResponse* response = rc->AddTensorResponse(rm);
+      RDMA_LOG(1) << "GetResponse....";
+      response->Start();
+    } else if (rm.type_ == RDMA_MESSAGE_META_DATA_UPDATE) {
+      RDMA_LOG(1) << "Recevive RDMA_MESSAGE_META_DATA_UPDATE";
+      RdmaTensorRequest* request = rc->GetTensorRequest(rm.request_index_);
+      if (request == nullptr) {
+        LOG(FATAL) << "RDMA_MESSAGE_META_DATA_UPDATE request : "
+                  << rm.request_index_ << " is already done by LocalBufferMgr.";
+      }
+      request->RecvTensorMetaData(rm.data_type_, rm.tensor_shape_,
                                       rm.is_dead_, rm.tensor_bytes_);
 #ifdef RDMA_DATA_VALIDATION
-          request->RecvTensorChecksum(rm.checksum_);
+      request->RecvTensorChecksum(rm.checksum_);
 #endif
-        } else if (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST) {
-          RdmaTensorResponse* response = rc->UpdateTensorResponse(rm);
-          response->Resume();
-        } else if (rm.type_ == RDMA_MESSAGE_ERROR_STATUS) {
-          RdmaTensorRequest* request = rc->GetTensorRequest(rm.request_index_);
-          request->RecvErrorStatus(rm.status_);
-        }
-      } else if (wc_[i].opcode == IBV_WC_RDMA_WRITE) {
-        RdmaWriteID* wr_id = reinterpret_cast<RdmaWriteID*>(wc_[i].wr_id);
-        RDMA_LOG(2) << "Write complete of type " << wr_id->write_type;
-        switch (wr_id->write_type) {
-          case RDMA_WRITE_ID_ACK:
-            break;
-          case RDMA_WRITE_ID_MESSAGE: {
-            RdmaMessageBuffer* rb =
-                reinterpret_cast<RdmaMessageBuffer*>(wr_id->write_context);
-            rb->SetBufferStatus(local, idle);
-            rb->SendNextItem();
-            break;
-          }
-          case RDMA_WRITE_ID_TENSOR_WRITE: {
-            RdmaTensorResponse* response =
-                reinterpret_cast<RdmaTensorResponse*>(wr_id->write_context);
-            response->Destroy();
-          }
-        }
-        delete wr_id;
+    } else if (rm.type_ == RDMA_MESSAGE_DRIVER_BEGIN) {
+      LOG(INFO) << "Recevive RDMA_MESSAGE_DRIVER_BEGIN";
+      RdmaTensorRequest* request = rc->GetTensorRequest(rm.request_index_);
+      if (request == nullptr) {
+        LOG(INFO) << "RDMA_MESSAGE_DRIVER_BEGIN request : "
+                  << rm.request_index_ << " is already done by LocalBufferMgr.";
       }
+    } else if (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST) {
+      RdmaTensorResponse* response = rc->UpdateTensorResponse(rm);
+      response->Resume();
+    } else if (rm.type_ == RDMA_MESSAGE_ERROR_STATUS) {
+      RdmaTensorRequest* request = rc->GetTensorRequest(rm.request_index_);
+      request->RecvErrorStatus(rm.status_);
+    }
+  } else if (wc_.opcode == IBV_WC_RDMA_WRITE) {
+    RdmaWriteID* wr_id = reinterpret_cast<RdmaWriteID*>(wc_.wr_id);
+    RDMA_LOG(2) << "Write complete of type " << wr_id->write_type;
+    switch (wr_id->write_type) {
+      case RDMA_WRITE_ID_ACK:
+        break;
+      case RDMA_WRITE_ID_MESSAGE: {
+        RdmaMessageBuffer* rb =
+            reinterpret_cast<RdmaMessageBuffer*>(wr_id->write_context);
+        // TODO(wuyongyu02): (local buffer idle)
+        rb->SetBufferStatus(local, idle);
+        rb->SendNextItem();
+        break;
+      }
+      case RDMA_WRITE_ID_SEND_DEIVER_WRITE: {
+        DriverEntry* entry =
+            reinterpret_cast<DriverEntry*>(wr_id->write_context);
+        RDMA_LOG(1)<< "succeed send FreeEntry uid:" << entry->uinque_id_;
+        break;
+      }
+      case RDMA_WRITE_ID_TENSOR_WRITE: {
+        RdmaTensorResponse* response =
+            reinterpret_cast<RdmaTensorResponse*>(wr_id->write_context);
+        response->Destroy();
+      }
+    }
+    if (wr_id->write_type != RDMA_WRITE_ID_SEND_DEIVER_WRITE) {
+      delete wr_id;
+    }
+  }
+}
+
+void RdmaAdapter::Pool_Process_CQ(int cq_num) {
+  LOG(INFO) << "Pool_Process_CQ:" << cq_num;
+  auto cq = cq_vec_[cq_num];
+  auto event_channel =  event_channel_vec_[cq_num];
+  auto wc = wc_vec_[cq_num];
+  while (true) {
+    ibv_cq* cq_tmp;
+    void* cq_context;
+    CHECK(!ibv_get_cq_event(event_channel, &cq_tmp, &cq_context));
+    CHECK(cq_tmp == cq);
+    ibv_ack_cq_events(cq_tmp, 1);
+    CHECK(!ibv_req_notify_cq(cq, 0));
+
+    int ne =
+        ibv_poll_cq(cq, MAX_CONCURRENT_WRITES * 2, static_cast<ibv_wc*>(wc));
+    CHECK_GE(ne, 0);
+
+    for (int i = 0; i < ne; ++i) {
+      auto c = std::bind(&RdmaAdapter::Process_WR, this, wc[i], cq_num);
+      pool_->Schedule(std::move(c));
+      // worker_env_->compute_pool->Schedule(std::move(c));
     }
   }
 }
@@ -537,7 +780,7 @@ int RdmaChannel::PingPostRecv() {
 int RdmaChannel::PingPostSend() {
   struct ibv_send_wr wr, *bad_wr;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = (uint64_t) this;
+  wr.wr_id = (uint64_t)this;
   wr.sg_list = &ping_sge_list_;
   wr.num_sge = 1;
   wr.opcode = IBV_WR_SEND;
@@ -547,11 +790,29 @@ int RdmaChannel::PingPostSend() {
 }
 
 RdmaChannel::RdmaChannel(const RdmaAdapter* adapter, const string local_name,
-                         const string remote_name)
+    const string remote_name, GrpcChannelCache* channel_cache, ibv_cq* cq)
     : adapter_(adapter),
       local_name_(local_name),
       remote_name_(remote_name),
-      request_serial_(0) {
+      request_serial_(0),
+      could_send_driver_(false),
+      channel_cache_(channel_cache),
+      pd_(adapter->pd_) {
+
+  rdma_memory_mgr_ = new RdmaMemoryMgr(adapter->pd_);
+  alloc_visitors_.emplace_back([&](void* ptr, int numa_node,
+                                           size_t num_bytes) {
+    LOG(INFO) << "RdmaChannel RdmaMgr alloc_visitor";
+    rdma_memory_mgr_->InsertMemoryRegion(
+        ptr, num_bytes, strings::StrCat("CPU:", numa_node));
+  });
+  free_visitors_.emplace_back([&](void* ptr, int numa_node,
+                                          size_t num_bytes) {
+    rdma_memory_mgr_->EvictMemoryRegion(ptr, num_bytes);
+  });
+
+  rdma_mem_allocator_ = new BFCRdmaAllocator(alloc_visitors_, free_visitors_);
+
   struct ibv_sge list;
 
   mr_ = ibv_reg_mr(adapter_->pd_, ping_buff_, kPingBuffSize,
@@ -568,13 +829,14 @@ RdmaChannel::RdmaChannel(const RdmaAdapter* adapter, const string local_name,
   {
     struct ibv_qp_init_attr attr;
     memset(&attr, 0, sizeof(ibv_qp_init_attr));
-    attr.send_cq = adapter_->cq_;
-    attr.recv_cq = adapter_->cq_;
+    attr.send_cq = cq;
+    attr.recv_cq = cq;
     attr.cap.max_send_wr = adapter_->params_.queue_depth;
     attr.cap.max_recv_wr = adapter_->params_.queue_depth;
     attr.cap.max_send_sge = 1;
     attr.cap.max_recv_sge = 1;
     attr.qp_type = IBV_QPT_RC;
+    // attr.qp_type = IBV_QPT_UC;
 
     qp_ = ibv_create_qp(adapter_->pd_, &attr);
     CHECK(qp_) << "Failed to create queue pair";
@@ -589,6 +851,7 @@ RdmaChannel::RdmaChannel(const RdmaAdapter* adapter, const string local_name,
     attr.port_num = adapter_->params_.port_num;
     attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
 
+    // https://man7.org/linux/man-pages/man3/ibv_modify_qp.3.html
     int mask =
         IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
     CHECK(!ibv_modify_qp(qp_, &attr, mask)) << "Failed to set QP to INIT";
@@ -614,24 +877,50 @@ RdmaChannel::RdmaChannel(const RdmaAdapter* adapter, const string local_name,
   // create message and ack buffers, then initialize the tables.
   {
     const string buffer_names[] = {"tx_message_buffer", "rx_message_buffer"};
-    tx_message_buffer_ = new RdmaMessageBuffer(this, buffer_names[0]);
-    rx_message_buffer_ = new RdmaMessageBuffer(this, buffer_names[1]);
     message_buffers_.reserve(kNumMessageBuffers);
-    message_buffers_.push_back(tx_message_buffer_);
-    message_buffers_.push_back(rx_message_buffer_);
-    // create buffer on host
-    tx_message_buffer_->CreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize);
-    rx_message_buffer_->CreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize);
+
+    // add other buffers
+    for (int i = 0; i < kNumMessageBuffers; i = i + 2) {
+      int pair_index = i/2+1;
+      std::stringstream ss;
+      ss << pair_index;
+      auto* tx_buffer1 = new RdmaMessageBuffer(this,
+          "tx_message_buffer_" + ss.str());
+      tx_buffer1->pair_index_ = pair_index;
+      auto* rx_buffer2 = new RdmaMessageBuffer(this,
+          "rx_message_buffer_" + ss.str());
+      rx_buffer2->pair_index_ = pair_index;
+      message_buffers_.push_back(tx_buffer1);
+      message_buffers_.push_back(rx_buffer2);
+      // create buffer and bind to MR
+      // tx_buffer1->CreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize);
+      // rx_buffer2->CreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize);
+      // NOTE(wuyongyu02): use chunk to alloc MR
+      void* p1;
+      void* p2;
+      ibv_mr* mr1;
+      ibv_mr* mr2;
+      adapter_->recv_chunk_->Alloc(ib_allocate_size(RdmaMessage::kRdmaMessageBufferSize * 2), &p1, &mr1);
+      CHECK(p1 != nullptr) << " p1 is nullptr";
+      tx_buffer1->ChunkCreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize, p1, mr1);
+      adapter_->recv_chunk_->Alloc(ib_allocate_size(RdmaMessage::kRdmaMessageBufferSize * 2), &p2, &mr2);
+      CHECK(p1 != nullptr) << " p2 is nullptr";
+      rx_buffer2->ChunkCreateCPUBuffer(RdmaMessage::kRdmaMessageBufferSize, p2, mr2);
+    }
   }
   CHECK(PingPostRecv() == 0) << "Couldn't post receive from " << remote_name_
                              << " with error " << std::strerror(errno);
+
+  channel_record_ = std::make_shared<ChannelRecordTensorMetaData>(this);
+  rdma_send_driver_mgr_ = std::make_shared<RdmaSendDriverMgr>(this);
+  local_driver_buffer_mgr_ = std::make_shared<LocalDriverBufferMgr>(this);
 }
 
 RdmaChannel::~RdmaChannel() {
   ibv_dereg_mr(mr_);
   CHECK(!ibv_destroy_qp(qp_)) << "Failed to destroy QP";
-  delete tx_message_buffer_;
-  delete rx_message_buffer_;
+  // delete tx_message_buffer_;
+  // delete rx_message_buffer_;
 }
 
 void RdmaChannel::SetRemoteAddress(const RdmaAddress& ra, bool override) {
@@ -657,7 +946,7 @@ void RdmaChannel::SetRemoteAddress(const RdmaAddress& ra, bool override) {
 void RdmaChannel::Recv() {
   struct ibv_recv_wr wr;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = (uint64_t) this;
+  wr.wr_id = (uint64_t)this;
   struct ibv_recv_wr* bad_wr;
   CHECK(!ibv_post_recv(qp_, &wr, &bad_wr)) << "Failed to post recv";
 }
@@ -668,9 +957,12 @@ RdmaTensorRequest* RdmaChannel::InsertTensorRequest(
     const RdmaTensorRequest::RecvDoneCallback& done) {
   mutex_lock lock{ct_mu_};
   uint32_t request_index = request_serial_++;
-  if (request_serial_ > RDMA_IMM_MAX_REQUEST_ID) {
+
+  // > RDMA_IMM_MIN_SENDMGR_BASE  for SendMgr
+  if (request_serial_ >= RDMA_IMM_MIN_SENDMGR_BASE) {
     request_serial_ = 0;
   }
+
   RdmaTensorRequest request(request_index, key, step_id, this, dst_dev,
                             recv_args, done);
   auto it = request_table_.emplace(request_index, request);
@@ -679,14 +971,32 @@ RdmaTensorRequest* RdmaChannel::InsertTensorRequest(
 
 void RdmaChannel::RemoveTensorRequest(uint32_t request_index) {
   mutex_lock lock{ct_mu_};
-  request_table_.erase(request_index);
+  RDMA_LOG(1) << "RemoveTensorRequest:" << request_index;
+            //<< " parsed_key:" << key_;
+  const auto& it = request_table_.find(request_index);
+  if (it != request_table_.end()) {
+    request_table_.erase(request_index);
+  }
 }
 
 RdmaTensorRequest* RdmaChannel::GetTensorRequest(uint32_t request_index) {
   mutex_lock lock{ct_mu_};
   RequestTable::iterator iter = request_table_.find(request_index);
-  CHECK(iter != request_table_.end());
+  // CHECK(iter != request_table_.end())
+  //    << " RdmaChannel is already been delete.";
+  if (iter == request_table_.end()) {
+    return nullptr;
+  }
   return &iter->second;
+}
+
+RdmaTensorRequest* RdmaChannel::GetTensorRequestForCat(uint32_t request_index) {
+  mutex_lock lock{ct_mu_};
+  RequestTable::iterator iter = request_table_.find(request_index);
+  if (iter != request_table_.end()) {
+     return &iter->second;
+  }
+  return nullptr;
 }
 
 void RdmaChannel::Connect() {
@@ -728,11 +1038,11 @@ void RdmaChannel::Connect(const RdmaAddress& remoteAddr) {
     attr.ah_attr.grh.traffic_class = adapter_->params_.traffic_class;
 
     int r;
-    CHECK(!(r = ibv_modify_qp(qp_, &attr, IBV_QP_STATE | IBV_QP_AV |
-                                              IBV_QP_PATH_MTU |
-                                              IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                                              IBV_QP_MAX_DEST_RD_ATOMIC |
-                                              IBV_QP_MIN_RNR_TIMER)))
+    CHECK(!(r = ibv_modify_qp(qp_, &attr,
+                              IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                                  IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                  IBV_QP_MAX_DEST_RD_ATOMIC |
+                                  IBV_QP_MIN_RNR_TIMER)))
         << "QP to Ready to Receive " << r;
 
     memset(&attr, 0, sizeof(ibv_qp_attr));
@@ -743,15 +1053,720 @@ void RdmaChannel::Connect(const RdmaAddress& remoteAddr) {
     attr.rnr_retry = 7; /* infinite */
     attr.max_rd_atomic = 1;
 
-    CHECK(!(r = ibv_modify_qp(qp_, &attr, IBV_QP_STATE | IBV_QP_TIMEOUT |
-                                              IBV_QP_RETRY_CNT |
-                                              IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
-                                              IBV_QP_MAX_QP_RD_ATOMIC)))
+    CHECK(!(r = ibv_modify_qp(qp_, &attr,
+                              IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+                                  IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
+                                  IBV_QP_MAX_QP_RD_ATOMIC)))
         << "QP to Ready to Send " << r;
 
     connected_ = true;
   } else {
     RDMA_LOG(2) << "channel already connected";
+  }
+}
+
+RdmaSendDriverMgr::RdmaSendDriverMgr(RdmaChannel* channel) {
+  channel_ = channel;
+  driver_mgr_is_ok_ = false;
+}
+
+size_t RdmaSendDriverMgr::InitLocalDriverEntry() {
+  // LOG(INFO) << "InitLocalDriverEntry begin...";
+  const auto& tensors_meta_data =
+      channel_->channel_record_->GetChannelTensorsMetaData();
+  const auto& global_tensors_meta_data =
+      RecordTensorMetaData::Singleton().GetGlobalTensorsMetaData();
+  // LOG(INFO) << "To Remote name:" << channel_->remote_name_
+  //           << "Channel_Record_Size:" << tensors_meta_data.size();
+  const auto& tensors_uidkeys =
+      channel_->channel_record_->GetChannelTensorsUidParsedkey();
+
+  CHECK(tensors_meta_data.size() == tensors_uidkeys.size())
+      << "tensors_meta_data size:" << tensors_meta_data.size()
+      << " tensors_uidkeys size:" << tensors_uidkeys.size();
+
+  LOG(INFO) << "InitLocalDriverEntry channel Metadata key begin "
+            << "create dirven-entry:"
+            << tensors_meta_data.size();
+  std::set<string> regrex_edge_keys;
+  for (auto& it : tensors_meta_data) {
+    const auto& meta_data = it.second;
+    const uint32& uid = meta_data.uid_;
+    void* addr;
+    ibv_mr *mr;
+    // allocate memory and region
+    int find_allocate_bytes = 0;
+    //NOTE(wuyongyu02) alloc recv-tensor memory
+    if (!channel_->FindLocalMr(it.first, &addr, &mr, &find_allocate_bytes)) {
+      LOG(INFO) << it.first << "not not find..";
+      find_allocate_bytes = 0;
+    } else {
+      LOG(INFO) << it.first << "find.. bytes:" << find_allocate_bytes;
+    }
+    int need_bytes =  VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() *
+                      ChannelRecordTensorMetaData::GetTensorBytes(meta_data) +
+                      DriverPrefixMessage::kPrefixMessageTotalBytes;
+
+    if (find_allocate_bytes < need_bytes) {
+      LOG(INFO) << it.first << "reallocate find.. need:"
+                << need_bytes << " " << find_allocate_bytes;
+      channel_->channel_record_->AllocateMemoryAndRegion(it.first, meta_data,
+          channel_->adapter_->pd_, &addr, &mr, &find_allocate_bytes);
+    }
+    driver_entries_[it.first] = std::make_shared<DriverEntry>(
+        uid, it.first, addr, mr, find_allocate_bytes);
+    driver_entries_[it.first]->meta_changed_ = meta_data.meta_changed_;
+  }
+
+  LOG(INFO) << "InitLocalDriverEntry channel Metadata key:"
+            << tensors_meta_data.size()
+            << " driver_entries size:"
+            << driver_entries_.size()
+            << " global_tensors_meta_data size:"
+            << global_tensors_meta_data.size();
+  // Notify local driven-entires entry through Rpc
+  // Notify by Rpc
+  NotifyRemoteDriverEntry();
+  return driver_entries_.size();
+}
+
+// server service Update
+void RdmaSendDriverMgr::RpcUpdateDriverEntries(const DriverMessageResp& resp) {
+  CHECK(channel_->remote_name_ == resp.host_name())
+      << "channel_->remote_name_:" << channel_->remote_name_
+      << " resp.host_name:" << resp.host_name();
+  size_t driver_mgr_is_ok = 0;
+  for (const auto& it : resp.item()) {
+    const auto& parsed_key = it.parsed_key();
+    const auto& entry = driver_entries_.find(parsed_key);
+    if (entry == driver_entries_.end()) {
+      LOG(FATAL) << "RDMA parsed key "
+                 << parsed_key
+                << " is not find in driver_entries_";
+      for (auto& k : driver_entries_) {
+        LOG(INFO) << "kkkk:" << k.first;
+      }
+    }
+    auto& entry_ptr = driver_entries_[parsed_key];
+    if (it.status() == DriverMessageItem::RPC_0 &&
+        entry_ptr->dri_status_ == RPC_0) {
+      entry_ptr->dri_status_ == RPC_1;
+    } else if (it.status() == DriverMessageItem::RPC_1 &&
+        entry_ptr->dri_status_ == RPC_1) {
+      entry_ptr->dri_status_ == DATA_NOT_READY;
+      driver_mgr_is_ok++;
+    } else {
+      LOG(ERROR) << "RDMA RdmaSendDriverMgr::DriverEntries"
+                 << " local_name:" << channel_->local_name_
+                 << " remote_name:" << channel_->remote_name_
+                 << " key:" << parsed_key
+                 << " entry.dri_status_:" << entry_ptr->dri_status_
+                 << " it.status:" << it.status();
+    }
+  }
+  // When all entries is ok, so set driver_mgr status to 'ok'
+  if (driver_mgr_is_ok == driver_entries_.size()) {
+    driver_mgr_is_ok_.store(true);
+    // LOG(INFO) << "[Succeed] "
+    //           << channel_->remote_name_
+    //           << " driver_mgr_ptr RpcSend Entries is ok!";
+  }
+}
+
+bool RdmaSendDriverMgr::RpcReqResp(GrpcVerbsClient* client,
+    const DriverMessageReq& req) {
+  // synchronous call
+  const auto& remote_name = channel_->remote_name_;
+  DriverMessageResp resp;
+  Status s;
+  int attempts = 0;
+  static const int max_num_attempts = 5;
+  do {
+    s = client->ReqDriverMessage(&req, &resp);
+    // save obtained remote addresses
+    // connect to the remote channel
+    if (s.ok()) {
+      RpcUpdateDriverEntries(resp);
+    } else {
+      LOG(ERROR) << "ReqDriverMessage Connecting to " << remote_name << ": Got "
+                  << s.error_message() << ". Retrying (" << (attempts + 1)
+                  << "/" << max_num_attempts << ")...";
+      if (++attempts == max_num_attempts) {
+        return false;
+      }
+      channel_->adapter_->worker_env_->env->SleepForMicroseconds(2000000);
+    }
+  } while (!s.ok());
+  return true;
+}
+
+// Notify by Rpc
+void RdmaSendDriverMgr::NotifyRemoteDriverEntry() {
+  const auto& remote_name = channel_->remote_name_;
+  const auto& local_name = channel_->local_name_;
+  RDMA_LOG(1) << "NotifyRemoteDriverEntry local_worker_name:" << local_name
+            << " remote_name:" << remote_name
+            << " driver_entries_ size:" << driver_entries_.size();
+
+  auto* cache = channel_->channel_cache_;
+  // get the channel cache
+  SharedGrpcChannelPtr client_channel =
+      channel_->channel_cache_->FindWorkerChannel(remote_name);
+  CHECK(client_channel != nullptr) << "target:"
+                                   << remote_name
+                                   << " client_channel is null!";
+  GrpcVerbsClient* client = new GrpcVerbsClient(client_channel);
+  CHECK(client != nullptr) << "No worker known as " << remote_name;
+
+  DriverMessageReq req;
+  req.set_host_name(local_name);
+  for (auto& it : driver_entries_) {
+    auto* item = req.add_item();
+    auto driver_entry_ptr = it.second;
+    item->set_unique_id(driver_entry_ptr->uinque_id_);
+    item->set_parsed_key(it.first);
+    item->set_remote_addr(driver_entry_ptr->addr_);
+    item->set_rkey(driver_entry_ptr->lkey_);
+    item->set_allocate_bytes(driver_entry_ptr->allocate_size_);
+    item->set_meta_changed(driver_entry_ptr->meta_changed_);
+    item->set_status(DriverMessageItem::RPC_0);
+    // Remember to update driver_entries_ Status
+    it.second->dri_status_ = RPC_0;
+  }
+  if (RpcReqResp(client, req)) {
+    DriverMessageReq req_rpc2;
+    req_rpc2.set_host_name(local_name);
+    for (auto& it : driver_entries_) {
+      auto* item = req_rpc2.add_item();
+      auto driver_entry_ptr = it.second;
+      item->set_unique_id(driver_entry_ptr->uinque_id_);
+      item->set_parsed_key(it.first);
+      item->set_remote_addr(driver_entry_ptr->addr_);
+      item->set_rkey(driver_entry_ptr->lkey_);
+      item->set_allocate_bytes(driver_entry_ptr->allocate_size_);
+      item->set_meta_changed(driver_entry_ptr->meta_changed_);
+      item->set_status(DriverMessageItem::RPC_1);
+      // Remember to update driver_entries_ Status
+      it.second->dri_status_ = RPC_1;
+    }
+    if (!RpcReqResp(client, req_rpc2)) {
+      LOG(ERROR) << "ReqDriverMessage RpcReqResp2 remote node "
+               << remote_name << " FAILED";
+    }
+  } else {
+    LOG(ERROR) << "ReqDriverMessage RpcReqResp remote node "
+               << remote_name << " FAILED";
+  }
+  RDMA_LOG(0) << "ReqDriverMessage Connected to remote node " << remote_name;
+  delete client;
+}
+
+void RdmaSendDriverMgr::RpcUpdateRemoteDriverEntry(
+    const DriverMessageReq* request, DriverMessageResp* response) {
+  // setting up response
+  response->set_host_name(channel_->local_name_);
+  int recv_driver_mgr_entry_ok_nums = 0;
+  for (const auto& req_item : request->item()) {
+    DriverMessageItem* resp_item = response->add_item();
+    string parsed_key = req_item.parsed_key();
+    resp_item->set_parsed_key(parsed_key);
+    const auto& it = recv_entries_.find(parsed_key);
+    DriverMessageItem::DriverStatus status = req_item.status();
+    if (it == recv_entries_.end() && status == DriverMessageItem::RPC_0) {
+      recv_entries_[parsed_key] = std::make_shared<DriverEntry>();
+      recv_entries_[parsed_key]->uinque_id_ = req_item.unique_id();
+      recv_entries_[parsed_key]->addr_ =  req_item.remote_addr();
+      recv_entries_[parsed_key]->lkey_ = req_item.rkey();
+      recv_entries_[parsed_key]->allocate_size_ = req_item.allocate_bytes();
+      recv_entries_[parsed_key]->meta_changed_ = req_item.meta_changed();
+      recv_entries_[parsed_key]->parsed_key_ = parsed_key;
+      // update recv entries
+      recv_entries_[parsed_key]->dri_status_ = RPC_0;
+      // response status
+      resp_item->set_status(DriverMessageItem::RPC_0);
+      RDMA_LOG(1) << "RpcUpdateRemoteDriverEntry parsed_key :"
+                << parsed_key
+                << " recv dir_status: RPC_0 "
+                << " update dir_status RPC_1 : "
+                << recv_entries_[parsed_key]->dri_status_;
+    } else if (it->second->dri_status_ == RPC_0 &&
+               status == DriverMessageItem::RPC_1) {
+      // response status
+      resp_item->set_status(DriverMessageItem::RPC_1);
+      // update recv entries
+      recv_entries_[parsed_key]->dri_status_ = DATA_NOT_READY;
+      recv_driver_mgr_entry_ok_nums += 1;
+      RDMA_LOG(1) << "RpcUpdateRemoteDriverEntry parsed_key :"
+                << parsed_key
+                << " recv dir_status: RPC_1 "
+                << " update dir_status DATA_NOT_READY : "
+                << recv_entries_[parsed_key]->dri_status_;
+    } else {
+      LOG(ERROR) << "UpdateRemoteDriverEntry:"
+                  << "local_name:"
+                  << channel_->local_name_
+                  << " revc from remote:"
+                  << request->host_name()
+                  << " parsed_key:"
+                  << parsed_key
+                  << " recv_entries dri_status is not `RPC_1` "
+                  << " status is :"
+                  << status
+                  << " dri_status is "
+                  << recv_entries_[parsed_key]->dri_status_;
+    }
+  }
+  RDMA_LOG(1) << "RdmaSendDriverMgr::RpcUpdateRemoteDriverEntry end...."
+            << " localname:" << channel_->local_name_
+            << " remotename:" << channel_->remote_name_
+            << " recv_entries_ size:" << recv_entries_.size();
+  // driver_mgr_ptr is ok and can send tensor to other client.
+  if (recv_driver_mgr_entry_ok_nums == recv_entries_.size()) {
+    // allocate string RDMA
+    // NOTE(wuyongyu02)
+    // Allocate StringMessage change to FindOrCreateMemeoryRegion
+    // AllocateRecvEntriesStringMemoryAndRegion();
+    LOG(INFO) << "[Succeed] "
+              << request->host_name()
+              << " driver_mgr_ptr RecvEntries is ok!";
+  }
+}
+
+void RdmaSendDriverMgr::AllocateRecvEntriesStringMemoryAndRegion() {
+  for (auto& k : recv_entries_) {
+    void* addr;
+    ibv_mr *mr;
+    // allocate memory and region
+    int allocate_bytes = 0;
+    channel_->channel_record_->AllocateSendStringMemoryAndRegion(
+        channel_->adapter_->pd_, &addr, &mr, &allocate_bytes);
+    k.second->send_mem_mr_ = std::make_shared<RemoteBytesAddrMemoryRegion>(
+        addr, mr, allocate_bytes);
+    RDMA_LOG(1) << "AllocateRecvEntriesStringMemoryAndRegion:"
+              << k.first
+              << " allocate_bytes:"
+              << allocate_bytes;
+  }
+}
+
+std::shared_ptr<DriverEntry> RdmaSendDriverMgr::GetRecvEntry(
+    const std::string& parsed_key, bool* has_data) {
+  const auto& it = recv_entries_.find(parsed_key);
+  if (it == recv_entries_.end()) {
+    for (auto& find : recv_entries_) {
+      if (absl::StrContains(parsed_key, find.first)) {
+        return find.second;
+      }
+    }
+    // LOG(FATAL) << parsed_key << " is not find in recv_entries_.";
+    return nullptr;
+  }
+  *has_data = recv_entries_[parsed_key]->dri_status_ == DATA_READY;
+  // LOG(INFO) << "parsed_key:" << parsed_key
+  //           << " status:" << recv_entries_[parsed_key]->dri_status_
+  //           << " has_data:" << *has_data;
+  return recv_entries_[parsed_key];
+}
+
+std::shared_ptr<DriverEntry> RdmaSendDriverMgr::GetDriverEntry(
+    const std::string& parsed_key, bool* has_data) {
+  const auto& it = driver_entries_.find(parsed_key);
+  if (it == driver_entries_.end()) {
+    for (auto& find : driver_entries_) {
+      if (absl::StrContains(parsed_key, find.first)) {
+        return find.second;
+      }
+    }
+    LOG(FATAL) << parsed_key << " is not find in driver_entries_.";
+  }
+  *has_data = driver_entries_[parsed_key]->dri_status_ == DATA_READY;
+  return driver_entries_[parsed_key];
+}
+
+DriverEntry::DriverEntry() {
+  dri_status_.store(DRIVER_INIT);
+}
+
+DriverEntry::DriverEntry(const uint32& uid,
+              const std::string& parsedkey,
+              void* addr,
+              ibv_mr* mr,
+              int allocate_size) {
+  addr_ = (uint64_t) addr;
+  mem_mr_ =
+      std::make_shared<RemoteBytesAddrMemoryRegion>(addr, mr, allocate_size);
+  lkey_ = mr->lkey;
+  uinque_id_ = uid;
+  parsed_key_ = parsedkey;
+  dri_status_.store(DRIVER_INIT);
+  allocate_size_ = allocate_size;
+}
+
+string ChannelRecordTensorMetaData::RegexEdgeName(const string & str) {
+  std::string regex_str(".*edge_\\d*(_.*)(_\\d*)?;0:0");
+  std::regex pattern(regex_str, std::regex::icase);
+  std::smatch result;
+  if (std::regex_match(str, result, pattern)) {
+    return std::string(result[1]);
+  } else {
+    LOG(ERROR) << "RegexEdgeName key:" << str << " is not matchaed. pattern:"
+                << regex_str;
+  }
+  return str;
+}
+
+void ChannelRecordTensorMetaData::InitMetaDataFromEnv() {
+  // Init Channel
+  mutex_lock l(channel_tensor_meta_data_mu_);
+  const string& name = channel_->local_name_;
+  if (absl::StrContains(name, "worker") ||
+      absl::StrContains(name, "localhost")) {
+    const string meta_str = GetWorkerMetas();
+    StringPiece s(meta_str);
+    while (!s.empty()) {
+      StringPiece result = ConsumeNextPart(&s, '|');
+      if (!result.empty()) {
+        StringPiece meta_name_view = ConsumeNextPart(&result, '#');
+        if (!meta_name_view.empty()) {
+          auto meta_name = string(meta_name_view);
+          std::stringstream ss(string(result).c_str());
+          int meta_size = 0;
+          ss >> meta_size;
+          CHECK(meta_size > 0)
+              << " meta_name" << meta_name << " size:" << meta_size;
+          auto find = channel_tensors_meta_data_.find(meta_name);
+          if (find == channel_tensors_meta_data_.end()) {
+            auto it = channel_tensors_meta_data_.emplace(meta_name,
+                                                         TensorMetaData());
+            channel_tensors_uid_parsed_key_.emplace(uid_, meta_name);
+            auto& meta = channel_tensors_meta_data_[meta_name];
+            meta.uid_ = uid_;
+            if (it.second) {
+              uid_++;
+            }
+            meta.data_type_ = DT_INT64;
+            meta.tensor_shape_ = {};
+            meta.proto_size_ = 0;
+            meta.is_dead_ = false;
+          }
+        }
+      }
+    }
+  }
+}
+
+ChannelRecordTensorMetaData::ChannelRecordTensorMetaData(RdmaChannel* channel) {
+  channel_ = channel;
+  InitMetaDataFromEnv();
+}
+
+uint32 ChannelRecordTensorMetaData::GetEnumSize(const DataType& date_type) {
+  switch (date_type) {
+    case DT_FLOAT:
+      return 4;
+      break;
+    case DT_DOUBLE:
+      return 8;
+      break;
+    case DT_INT32:
+      return 4;
+      break;
+    case DT_UINT32:
+      return 4;
+      break;
+    case DT_UINT16:
+      return 2;
+      break;
+    case DT_INT8:
+      return 1;
+      break;
+    case DT_UINT8:
+      return 1;
+      break;
+    case DT_INT16:
+      return 2;
+      break;
+    case DT_INT64:
+      return 8;
+      break;
+    case DT_UINT64:
+      return 8;
+      break;
+    case DT_BOOL:
+      return 1;
+      break;
+    default:
+      return 4;
+      break;
+  }
+}
+
+void ChannelRecordTensorMetaData::AllocateSendStringMemoryAndRegion(ibv_pd* pd,
+                                        void** addr,
+                                        ibv_mr** mr,
+                                        int* addr_size,
+                                        Allocator* alloc_attr) {
+  // allocate prefix DriverPrefixMessage
+  auto total_bytes = DriverPrefixMessage::kPrefixMessageTotalBytes;
+  RDMA_LOG(1) << "AllocateSendStringMemoryAndRegion total bytes:"
+              << total_bytes;
+  *addr = malloc(total_bytes);
+  CHECK(addr != nullptr)
+      << "AllocateSendStringMemoryAndRegion addr malloc faild!";
+  *mr = ibv_reg_mr(pd, *addr, total_bytes,
+                  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+  *addr_size = total_bytes;
+}
+
+int ChannelRecordTensorMetaData::GetTensorBytes(const TensorMetaData& m) {
+  int total_bytes = 0;
+  if (DataTypeCanUseMemcpy(m.data_type_)) {
+    int m1 = m.tensor_shape_.num_elements();
+    total_bytes = m1 * GetEnumSize(m.data_type_);
+  } else {
+    total_bytes = m.proto_size_;
+  }
+  return total_bytes;
+}
+
+void ChannelRecordTensorMetaData::AllocateMemoryAndRegion(
+                                  const string& key,
+                                  const TensorMetaData& m,
+                                  ibv_pd* pd,
+                                  void** addr,
+                                  ibv_mr** mr,
+                                  int* addr_size,
+                                  Allocator* alloc_attr) const {
+  int total_bytes = GetTensorBytes(m);
+  total_bytes =
+      VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * total_bytes;
+  // allocate prefix DriverPrefixMessage
+  total_bytes += DriverPrefixMessage::kPrefixMessageTotalBytes;
+  RDMA_LOG(1) << "AllocateMemoryAndRegion key:"
+              << key
+              << " total bytes:" << total_bytes;
+  *addr = malloc(total_bytes);
+  CHECK(addr != nullptr) << "AllocateMemoryAndRegion addr malloc faild!";
+  *mr = ibv_reg_mr(pd, *addr, total_bytes,
+                  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+  *addr_size = total_bytes;
+}
+
+
+void ChannelRecordTensorMetaData::Record(const std::string& tensor_name,
+                                         const TensorMetaData& m) {
+  // send-driver stop record
+  if (channel_->could_send_driver_) {
+    return;
+  }
+  // LOG(INFO) << "ChannelRecordTensorMetaData::Record " << is_stable_;
+  mutex_lock l(channel_tensor_meta_data_mu_);
+  auto find = channel_tensors_meta_data_.find(tensor_name);
+  if (find == channel_tensors_meta_data_.end()) {
+    // LOG(INFO) << "Channel Record Tensorname:" << tensor_name;
+    auto it = channel_tensors_meta_data_.emplace(tensor_name, TensorMetaData());
+    channel_tensors_uid_parsed_key_.emplace(uid_, tensor_name);
+    auto& meta = channel_tensors_meta_data_[tensor_name];
+    meta.uid_ = uid_;
+    if (it.second) {
+      uid_++;
+    }
+    meta.data_type_ = m.data_type_;
+    meta.tensor_shape_ = m.tensor_shape_;
+    meta.proto_size_ = m.proto_size_;
+    meta.is_dead_ = m.is_dead_;
+  } else {
+    auto& meta = find->second;
+    bool can_memcpy = DataTypeCanUseMemcpy(m.data_type_);
+    if (can_memcpy) {
+      int m1 = 1;
+      int m2 = 1;
+      for (int d = 0; d < m.tensor_shape_.dims(); d++) {
+        m1 *= m.tensor_shape_.dim_size(d);
+        m2 *= meta.tensor_shape_.dim_size(d);
+      }
+      if (m1 > m2) {
+        meta.data_type_ = m.data_type_;
+        meta.tensor_shape_ = m.tensor_shape_;
+        meta.proto_size_ = m.proto_size_;
+        meta.is_dead_ = m.is_dead_;
+      }
+      if (m1 != m2) {
+        // LOG(INFO) << "Tensorname:" << tensor_name << " meta_changed.";
+        meta.meta_changed_ = true;
+      }
+    }
+    if ((!can_memcpy && meta.proto_size_ > m.proto_size_)) {
+      meta.data_type_ = m.data_type_;
+      meta.tensor_shape_ = m.tensor_shape_;
+      meta.proto_size_ = 10 * m.proto_size_;
+      meta.is_dead_ = m.is_dead_;
+    }
+    if (!can_memcpy && meta.proto_size_ != m.proto_size_) {
+      // LOG(INFO) << "Tensorname:" << tensor_name << " _meta_changed.";
+      meta.meta_changed_ = true;
+    }
+  }
+}
+
+StringPiece ChannelRecordTensorMetaData::ConsumeNextPart(StringPiece* s,
+    char delim) {
+  for (size_t offset = 0; offset < s->size(); offset++) {
+    if ((*s)[offset] == delim) {
+      StringPiece result(s->data(), offset);
+      s->remove_prefix(offset + 1);  // +1: remove delim, as well
+      return result;
+    }
+  }
+  // No delimiter found: return rest of string
+  StringPiece result(s->data(), s->size());
+  s->remove_prefix(s->size());
+  return result;
+}
+
+string RecordTensorMetaData::DebugString() const {
+  std::vector<string> lc;
+  for (auto& it : global_tensors_meta_data_) {
+    std::vector<string> ds;
+    ds.emplace_back(string(it.first));
+    // dtype
+    ds.emplace_back(std::to_string(it.second.data_type_));
+    // num elements
+    auto num_elements = it.second.tensor_shape_.num_elements();
+    ds.emplace_back(std::to_string(num_elements));
+    auto total_bytes = num_elements * GetEnumSize(it.second.data_type_);
+    ds.emplace_back(std::to_string(total_bytes));
+    lc.push_back(absl::StrJoin(lc, ","));
+  }
+    return absl::StrJoin(lc, "\n");
+}
+
+void RecordTensorMetaData::WriteOutput(const std::string& content) const {
+  Env* env = Env::Default();
+  std::string path_dir = GetMetaOutput();
+  if (!env->FileExists(path_dir).ok()) {
+    LOG(INFO) << "File " << path_dir << " is not exists!";
+    env->CreateDir(path_dir);
+    LOG(INFO) << "CreateFileDir " << path_dir << " sucess!";
+  }
+
+  std::string cfn = path_dir + "/" + local_worker_name_;
+  // Write something to the temporary file.
+  std::unique_ptr<WritableFile> file_to_write;
+  TF_CHECK_OK(env->NewWritableFile(cfn, &file_to_write));
+  TF_CHECK_OK(file_to_write->Append(content));
+  TF_CHECK_OK(file_to_write->Close());
+  TF_CHECK_OK(env->FileExists(cfn));
+}
+
+void RecordTensorMetaData::ReadFile(const std::string& filename,
+    StringPiece* content) {
+  Env* env = Env::Default();
+  // Read from the temporary file and check content.
+  std::unique_ptr<RandomAccessFile> file_to_read;
+  TF_CHECK_OK(env->NewRandomAccessFile(filename, &file_to_read));
+  // StringPiece content;
+  char scratch[1024];
+  CHECK_EQ(error::OUT_OF_RANGE,
+          file_to_read->Read(0 /* offset */, 1024 /* n */, content, scratch)
+              .code());
+}
+
+uint32 RecordTensorMetaData::GetEnumSize(const DataType& date_type) {
+  switch (date_type) {
+    case DT_FLOAT:
+      return 4;
+      break;
+    case DT_DOUBLE:
+      return 8;
+      break;
+    case DT_INT32:
+      return 4;
+      break;
+    case DT_UINT32:
+      return 4;
+      break;
+    case DT_UINT16:
+      return 2;
+      break;
+    case DT_INT8:
+      return 1;
+      break;
+    case DT_UINT8:
+      return 1;
+      break;
+    case DT_INT16:
+      return 2;
+      break;
+    case DT_INT64:
+      return 8;
+      break;
+    case DT_UINT64:
+      return 8;
+      break;
+    case DT_BOOL:
+      return 1;
+      break;
+    default:
+      return 4;
+      break;
+  }
+}
+
+void RecordTensorMetaData::GlobalRecord(const std::string& origin_tensor_name,
+    const TensorMetaData& m, bool stop_record) {
+  // send-driver status stop record
+  if (stop_record) {
+    return;
+  }
+  mutex_lock l(global_tensor_meta_data_mu_);
+  auto tensor_name = ChannelRecordTensorMetaData::RegexEdgeName(
+      origin_tensor_name);
+  auto find = global_tensors_meta_data_.find(tensor_name);
+  // LOG(INFO) << "Record Tensorname:" << tensor_name;
+  if (find == global_tensors_meta_data_.end()) {
+    auto it = global_tensors_meta_data_.emplace(tensor_name, TensorMetaData());
+    global_tensors_uid_parsed_key_.emplace(uid_, tensor_name);
+    auto& meta = global_tensors_meta_data_[tensor_name];
+    meta.uid_ = uid_;
+    if (it.second) {
+      uid_++;
+    }
+    meta.data_type_ = m.data_type_;
+    meta.tensor_shape_ = m.tensor_shape_;
+    meta.proto_size_ = m.proto_size_;
+    meta.is_dead_ = m.is_dead_;
+  } else {
+    auto& meta = find->second;
+    bool can_memcpy = DataTypeCanUseMemcpy(m.data_type_);
+    if (can_memcpy) {
+      int m1 = 1;
+      int m2 = 1;
+      for (int d = 0; d < m.tensor_shape_.dims(); d++) {
+        m1 *= m.tensor_shape_.dim_size(d);
+        m2 *= meta.tensor_shape_.dim_size(d);
+      }
+      if (m1 > m2) {
+        meta.data_type_ = m.data_type_;
+        meta.tensor_shape_ = m.tensor_shape_;
+        meta.proto_size_ = m.proto_size_;
+        meta.is_dead_ = m.is_dead_;
+      }
+    }
+    if ((!can_memcpy && meta.proto_size_ > m.proto_size_)) {
+      meta.data_type_ = m.data_type_;
+      meta.tensor_shape_ = m.tensor_shape_;
+      meta.proto_size_ = 10 * m.proto_size_;
+      meta.is_dead_ = m.is_dead_;
+    }
+  }
+  int tmp_sizes = 0;
+  for(const auto& k : global_tensors_meta_data_) {
+    tmp_sizes += ChannelRecordTensorMetaData::GetTensorBytes(k.second);
+  }
+  if (tmp_sizes > total_bytes_) {
+    total_bytes_ = tmp_sizes;
+    LOG(INFO) << "GlobalRecord bytes:" << total_bytes_;
   }
 }
 
@@ -766,6 +1781,26 @@ RdmaMessageBuffer::~RdmaMessageBuffer() {
 void RdmaMessageBuffer::FreeBuffer() {
   if ((buffer_ != nullptr) && buffer_on_host_) {
     free(buffer_);
+  }
+}
+
+void RdmaMessageBuffer::ChunkCreateCPUBuffer(size_t size, void* buffer, ibv_mr* mr,
+    bool lock) {
+  CHECK(size > 0);
+  if (lock) {
+    mu_.lock();
+  }
+  if (local_status_ != none) {
+    // delete existing buffer
+  }
+  size_ = size;
+  buffer_ = buffer;
+  self_ = mr;
+  CHECK(self_) << "Failed to register memory region";
+  buffer_on_host_ = true;
+  local_status_ = idle;
+  if (lock) {
+    mu_.unlock();
   }
 }
 
@@ -828,6 +1863,44 @@ void RdmaMessageBuffer::Write(uint32_t imm_data, size_t buffer_size) {
 }
 
 // Generalized Write method
+void RdmaMessageBuffer::WriteWithPrefix(const RdmaChannel* channel,
+                              uint32_t imm_data,
+                              size_t buffer_size,
+                              uint64_t src_addr,
+                              uint32_t lkey,
+                              uint64_t remote_addr,
+                              uint32_t rkey,
+                              RdmaWriteIDType write_type,
+                              void* write_context,
+                              uint64_t prefix_addr,
+                              uint32_t prefix_lkey,
+                              size_t prefix_size) {
+  struct ibv_sge* list = new ibv_sge[2];
+  list[0].addr = prefix_addr;
+  list[0].length = prefix_size;
+  list[0].lkey = prefix_lkey;
+
+  list[1].addr = src_addr;
+  list[1].length = buffer_size;
+  list[1].lkey = lkey;
+
+  struct ibv_send_wr wr;
+  memset(&wr, 0, sizeof(wr));
+
+  wr.wr_id = (uint64_t) new RdmaWriteID(write_type, write_context);
+  wr.sg_list = list;
+  wr.num_sge = 2;
+  wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+  wr.send_flags = IBV_SEND_SIGNALED;
+  wr.imm_data = imm_data;
+  wr.wr.rdma.remote_addr = remote_addr;
+  wr.wr.rdma.rkey = rkey;
+
+  struct ibv_send_wr* bad_wr;
+  CHECK(!ibv_post_send(channel->qp_, &wr, &bad_wr)) << "Failed to post send";
+}
+
+// Generalized Write method
 void RdmaMessageBuffer::Write(const RdmaChannel* channel, uint32_t imm_data,
                               size_t buffer_size, uint64_t src_addr,
                               uint32_t lkey, uint64_t remote_addr,
@@ -840,6 +1913,7 @@ void RdmaMessageBuffer::Write(const RdmaChannel* channel, uint32_t imm_data,
 
   struct ibv_send_wr wr;
   memset(&wr, 0, sizeof(wr));
+
   wr.wr_id = (uint64_t) new RdmaWriteID(write_type, write_context);
   wr.sg_list = &list;
   wr.num_sge = 1;
@@ -854,17 +1928,21 @@ void RdmaMessageBuffer::Write(const RdmaChannel* channel, uint32_t imm_data,
 }
 
 // Send the next ack from the buffer's job queue.
-void RdmaMessageBuffer::SendAck(const RdmaChannel* channel) {
-  Write(channel, RDMA_IMM_DATA_ACK, 0, 0, 0, 0, 0, RDMA_WRITE_ID_ACK, nullptr);
+void RdmaMessageBuffer::SendAck(const RdmaChannel* channel, int pair_index) {
+  Write(channel, RDMA_IMM_MAX_REQUEST_ID + pair_index, 0, 0, 0, 0, 0,
+        RDMA_WRITE_ID_ACK, nullptr);
 }
 
 // Send the next message from the buffer's job queue.
 void RdmaMessageBuffer::SendNextItem() {
-  uint32_t imm_data = RDMA_IMM_DATA_MESSAGE;
+  uint32_t imm_data = RDMA_IMM_DATA_ACK + pair_index_;
   mu_.lock();
   if (!queue_.empty() && (local_status_ == idle) && (remote_status_ == idle)) {
     local_status_ = busy;
     remote_status_ = busy;
+    time_guard_ = 0;
+    rm_ack_micros_ = 0;
+    // LOG(ERROR) << "SendNextItem queue size:" << queue_.size();
     string message = queue_.front();
     queue_.pop();
     // local/remote_status_ won't be set back to idle
@@ -969,47 +2047,63 @@ static void StreamGPUOp(Device* gpu_device, const DeviceContext* device_context,
 
 RdmaTensorResponse* RdmaChannel::AddTensorResponse(const RdmaMessage& rm) {
   mutex_lock lock{mu_};
-  auto it =
-      responses_table_.emplace(rm.request_index_, RdmaTensorResponse(this, rm));
+  auto it = responses_table_.emplace(rm.request_index_,
+      std::make_shared<RdmaTensorResponse>(this, rm));
   CHECK(it.second) << "Response with the ID " << rm.request_index_
                    << " already exists.";
-  return &it.first->second;
+  // replica request_index
+  it.first->second->request_index_ = rm.request_index_;
+  return it.first->second.get();
 }
 
 RdmaTensorResponse* RdmaChannel::UpdateTensorResponse(const RdmaMessage& rm) {
   mutex_lock lock{mu_};
   auto it = responses_table_.find(rm.request_index_);
   CHECK(it != responses_table_.end()) << "No response found.";
-  RdmaTensorResponse* response = &it->second;
+  RdmaTensorResponse* response = it->second.get();
   response->Update(rm);
   return response;
 }
 
 void RdmaChannel::RemoveTensorResponse(uint32_t request_index) {
   mutex_lock lock{mu_};
-  responses_table_.erase(request_index);
+  if (responses_table_.find(request_index) != responses_table_.end())
+    responses_table_.erase(request_index);
 }
 
 void RdmaTensorResponse::Start() {
+  // LOG(INFO) << "RdmaTensorResponse Start...";
   Rendezvous::ParsedKey parsed;
   Status s = Rendezvous::ParseKey(rm_.name_, &parsed);
+  if (s.ok()) {
+    s = PrepareRecvTensor(parsed, &src_dev_);
+  }
   if (!s.ok()) {
-    SendErrorStatus(s);
+    SendErrorStatus(s, "RdmaTensorResponse::Start::PrepareRecvTensor");
     return;
   }
-
+  recv_local_send_rdma_ = 0;
   channel_->adapter_->worker_env_->rendezvous_mgr->RecvLocalAsync(
       rm_.step_id_, parsed,
-      [this, parsed](const Status& status, const Rendezvous::Args& send_args,
+      [this](const Status& status, const Rendezvous::Args& send_args,
                      const Rendezvous::Args& recv_args, const Tensor& in,
-                     bool is_dead) {
-        CHECK(status.ok()) << "RecvLocalAsync was not ok."
-                           << " error message: " << status.error_message();
-        RecvHandler(parsed, send_args, recv_args, in, is_dead);
+                     bool is_dead) mutable {
+          // (wuyongyu02) if the sender don't receive tensor from local
+          // should't CHECK(FALSE), can send SendErrorStatus  like
+          // RdmaTensorResponse::RecvHandler(...) {... SendErrorStatus(status);}
+          // CHECK(status.ok()) << "RecvLocalAsync was not ok."
+          //                    << "src_device : " << parsed.src_device
+          //                    << "dst_device : " << parsed.dst_device
+          //                    << " error message: " << status.error_message();
+          if (!status.ok()) {
+            // SendErrorStatus(status, "rendezvous_mgr->RecvLocalAsync::");
+            return;
+          }
+          RecvHandler(send_args, recv_args, in, is_dead);
       });
 }
 
-void RdmaTensorResponse::Resume() { SendContent(*tensor_, *proto_, is_dead_); }
+void RdmaTensorResponse::Resume() { SendContent(*tensor_, *proto_, is_dead_, true); }
 
 // Helper for RecvTensor. Validates "key" and returns the source
 // device in "*src_dev".
@@ -1035,16 +2129,9 @@ Status RdmaTensorResponse::PrepareRecvTensor(
   return Status::OK();
 }
 
-void RdmaTensorResponse::RecvHandler(Rendezvous::ParsedKey parsed,
-                                     const Rendezvous::Args& send_args,
+void RdmaTensorResponse::RecvHandler(const Rendezvous::Args& send_args,
                                      const Rendezvous::Args& recv_args,
                                      const Tensor& in, bool is_dead) {
-  Status s = PrepareRecvTensor(parsed, &src_dev_);
-  if (!s.ok()) {
-    SendErrorStatus(s);
-    return;
-  }
-
   meta_data_changed_ = TensorMetaDataChanged(in, is_dead);
 #ifdef RDMA_DATA_VALIDATION
   // Always send a meta data message with the source checksum
@@ -1071,9 +2158,7 @@ void RdmaTensorResponse::RecvHandler(Rendezvous::ParsedKey parsed,
       // so anyway we'll have to copy it from GPU to CPU first. If at some
       // point in time Clone() is changed to only save a shallow copy, we can
       // skip the copy here as well.
-      if ((in.TotalBytes() > 0) && !meta_data_changed_ &&
-          (RdmaMemoryMgr::Singleton().FindMemoryRegion(
-               (void*)DMAHelper::base(&in), in.TotalBytes()) != nullptr)) {
+      if ((in.TotalBytes() > 0) && !meta_data_changed_) {
         StreamGPUOp(src_dev_, send_dev_context,
                     [this, in, proto, is_dead](const Status& s) {
                       Send(in, proto, is_dead, s);
@@ -1101,7 +2186,8 @@ void RdmaTensorResponse::RecvHandler(Rendezvous::ParsedKey parsed,
           });
     }
 #else
-    SendErrorStatus(errors::Internal("No GPU device in process"));
+    SendErrorStatus(errors::Internal("No GPU device in process"),
+                    "No GPU device in process");
 #endif  // GOOGLE_CUDA
   } else {
     // tensor is in CPU memory.
@@ -1115,23 +2201,201 @@ void RdmaTensorResponse::RecvHandler(Rendezvous::ParsedKey parsed,
 void RdmaTensorResponse::Send(const Tensor& in, const TensorProto& proto,
                               bool is_dead, const Status& status) {
   if (!status.ok()) {
-    SendErrorStatus(status);
+    SendErrorStatus(status, "RdmaTensorResponse::Send::!status.ok");
+    return;
+  }
+  SendBck(in, proto, is_dead, status);
+}
+
+void RdmaChannel::SendDriverData(const Tensor& in,
+                                 bool is_dead,
+                                 const std::string& name) {
+  bool has_data = false;
+  std::shared_ptr<DriverEntry> entry =
+      rdma_send_driver_mgr_->GetRecvEntry(name, &has_data);
+
+  CHECK(entry.get() != nullptr) << "Channel SendDriverData to "
+                                << name
+                                << " is_dead:"
+                                << is_dead
+                                << " dtype:"
+                                << DataTypeString(in.dtype())
+                                << " shape:"
+                                << in.shape();
+
+  bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
+  TensorProto proto;
+  if (!can_memcpy) {
+    in.AsProtoTensorContent(&proto);
+  }
+  size_t tensor_bytes = can_memcpy ? in.TotalBytes() : proto.ByteSize();
+  if (is_dead) {
+    tensor_bytes = 0;
+  }
+  entry->send_micros_ = 0;
+  // prefix
+  string prefix = DriverPrefixMessage::CreateDriverPrefixMessage(in.shape(),
+      tensor_bytes, is_dead, entry->send_micros_, entry->meta_changed_);
+  uint32_t imm_data = entry->uinque_id_;
+
+  // tensor
+  uint32_t send_tensor_lkey = 0;
+  size_t prefix_s = prefix.size();
+  int need_length = prefix_s + tensor_bytes;
+  if (entry->tensor_addr_ == nullptr) {
+    if (!FindLocalMr(name, &entry->tensor_addr_,
+          &entry->smr_, &entry->local_allocate_size_)) {
+      entry->local_allocate_size_ = 0;
+    }
+  }
+  if (need_length > entry->local_allocate_size_) {
+    LOG(INFO) << "key :" << name << " relloc need_length:"
+              << need_length
+              << " already size:"
+              << entry->local_allocate_size_;
+    entry->local_allocate_size_ = Alloc(prefix_s + 
+        VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * tensor_bytes,
+        &entry->tensor_addr_, &entry->smr_, false);
+  }
+
+  if (!is_dead) {
+    if (can_memcpy) {
+      // allocate region and copy data
+      entry->src_buffer_ = const_cast<TensorBuffer*>(DMAHelper::buffer(&in));
+      if (entry->src_buffer_ != nullptr) {
+        if (tensor_bytes > 0) {
+          void* addr_offset = (void*)((uint64_t)entry->tensor_addr_ + prefix_s);
+          memcpy(addr_offset, DMAHelper::base(&in), tensor_bytes);
+        }
+      }
+    } else {
+      // for send dirven
+      void* addr_offset = (void*)((uint64_t)entry->tensor_addr_ + prefix_s);
+      proto.SerializeToArray(addr_offset, tensor_bytes);
+    }
+  } else {
+    tensor_bytes = 0;
+  }
+  memcpy(entry->tensor_addr_, prefix.data(), prefix_s);
+  send_tensor_lkey = (entry->smr_ == nullptr) ?
+                        0 : entry->smr_->lkey;
+  // remote mr addr
+  uint64_t remote_addr = entry->addr_;
+  uint32_t rkey = entry->lkey_;
+  CHECK(tensor_bytes + prefix_s <= entry->allocate_size_)
+      << " 1name:" << name
+      << " May should large allocate static memory ratio"
+      << " tensor_bytes:" << tensor_bytes
+      << " prefix_s:" << prefix_s
+      << " entry->allocate_size_:" << entry->allocate_size_;
+  auto tensor_addr = (uint64_t)entry->tensor_addr_;
+  RdmaMessageBuffer::Write(this, imm_data, tensor_bytes + prefix_s,
+      tensor_addr, send_tensor_lkey, remote_addr, rkey,
+      RDMA_WRITE_ID_SEND_DEIVER_WRITE, entry.get());
+}
+
+void RdmaChannel::InitAndSetDriverStatus() {
+  size_t entries_size = rdma_send_driver_mgr_->InitLocalDriverEntry();
+  // init LocalDriverBufferMgr
+  size_t ready_size = local_driver_buffer_mgr_->InitLocalDriverBufferMgr();
+  CHECK_EQ(entries_size, ready_size)
+      << "NotifyAsyncAllocator entries_size:"
+      << entries_size
+      << " ready_size:"
+      << ready_size;
+  // TODO(wuyongyu) could_send_driver must set before Async InitLocalDriverEntry
+  could_send_driver_ = true;
+}
+
+void RdmaChannel::PleSendOrCheck() {
+  const auto& remote_name = remote_name_;
+  const auto& local_name = local_name_;
+  RDMA_LOG(1) << "NotifyRemoteDriverEntry local_worker_name:" << local_name
+            << " remote_name:" << remote_name;
+
+  // get the channel cache
+  SharedGrpcChannelPtr client_channel =
+      channel_cache_->FindWorkerChannel(remote_name);
+  CHECK(client_channel != nullptr) << "PleSendOrCheck target:"
+                                   << remote_name
+                                   << " client_channel is null!";
+  GrpcVerbsClient* client = new GrpcVerbsClient(client_channel);
+  CHECK(client != nullptr) << "PleSendOrCheck No worker known as "
+                           << remote_name;
+
+  PleSendOrCheckReq req;
+  req.set_host_name(local_name);
+  // synchronous call
+  PleSendOrCheckResp resp;
+  Status s;
+  int attempts = 0;
+  static const int max_num_attempts = 5;
+  do {
+    s = client->ReqPleSendOrCheck(&req, &resp);
+    // save obtained remote addresses
+    // connect to the remote channel
+    if (s.ok() && resp.is_ok()) {
+      LOG(INFO) << "verbs to "<< remote_name << " ReqPleSendOrCheck succeed!";
+    } else {
+      LOG(ERROR) << "ReqPleSendOrCheck Connecting to "
+                 << remote_name << ": Got "
+                 << s.error_message() << ". Retrying (" << (attempts + 1)
+                 << " Remote worker Async status:" << resp.is_ok()
+                 << "/" << max_num_attempts << ")..."
+                 << " resp.is_ok:" << resp.is_ok();
+
+      if (++attempts == max_num_attempts) {
+        CHECK(FATAL) << "RdmaChannel::PleSendOrCheck failed";
+      }
+      adapter_->worker_env_->env->SleepForMicroseconds(2000000);
+    }
+  } while (!s.ok());
+  delete client;
+}
+
+void RdmaTensorResponse::SendBck(const Tensor& in, const TensorProto& proto,
+                              bool is_dead, const Status& status) {
+  if (!status.ok()) {
+    SendErrorStatus(status, "RdmaTensorResponse::SendBck::!status.ok");
     return;
   }
   bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
   bool proto_size_changed =
       (!can_memcpy) && (proto.ByteSize() != rm_.tensor_bytes_);
+
+  int pair_index = (request_index_ % RdmaChannel::kNumMessageBuffers) / 2;
+  int buffer_index = 2 * pair_index;
+  auto* tx_buffer = channel_->message_buffers()[buffer_index];
+  // move cpu allocator tensor to RdmaMR tensor
+  // RdmaClone(in, proto, is_dead);
   if (meta_data_changed_ || proto_size_changed) {
     Clone(in, proto, is_dead);
+    // Here is a bug
     SendMetaData(in, proto, is_dead);
+    tx_buffer->SendNextItem();
   } else {
-    SendContent(in, proto, is_dead);
+    SendContent(in, proto, is_dead, false);
   }
 }
 
 bool RdmaTensorResponse::TensorMetaDataChanged(const Tensor& in, bool is_dead) {
   return (rm_.data_type_ != in.dtype()) || (rm_.tensor_shape_ != in.shape()) ||
          (rm_.is_dead_ != is_dead);
+}
+
+void RdmaTensorResponse::RdmaClone(const Tensor& in, const TensorProto& proto,
+                               bool is_dead) {
+  bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
+  if (can_memcpy && (in.TotalBytes() > 0)) {
+    tensor_ = new Tensor(channel_->rdma_mem_allocator_, in.dtype(), in.shape());
+    memcpy(DMAHelper::base(tensor_), DMAHelper::base(&in), in.TotalBytes());
+  } else {
+    tensor_ = new Tensor(in.dtype(), in.shape());
+  }
+  if (!can_memcpy) {
+    proto_ = new TensorProto(proto);
+  }
+  is_dead_ = is_dead;
 }
 
 void RdmaTensorResponse::Clone(const Tensor& in, const TensorProto& proto,
@@ -1142,13 +2406,23 @@ void RdmaTensorResponse::Clone(const Tensor& in, const TensorProto& proto,
   // that some tensors share their buffer between different step-ids, so the
   // tensor content may change before re-request was completed.
   bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
+  // if (can_memcpy && (in.TotalBytes() > 0)) {
+  //   AllocatorAttributes host_alloc_attrs;
+  //   host_alloc_attrs.set_nic_compatible(true);
+  //   host_alloc_attrs.set_on_host(true);
+  //   Allocator* allocator = src_dev_->GetAllocator(host_alloc_attrs);
+  //   tensor_ = new Tensor(allocator, in.dtype(), in.shape());
+  //   memcpy(DMAHelper::base(tensor_), DMAHelper::base(&in), in.TotalBytes());
+  // } else {
+  //   tensor_ = new Tensor(in.dtype(), in.shape());
+  // }
   if (can_memcpy && (in.TotalBytes() > 0)) {
-    AllocatorAttributes host_alloc_attrs;
-    host_alloc_attrs.set_nic_compatible(true);
-    host_alloc_attrs.set_on_host(true);
-    Allocator* allocator = src_dev_->GetAllocator(host_alloc_attrs);
-    tensor_ = new Tensor(allocator, in.dtype(), in.shape());
-    memcpy(DMAHelper::base(tensor_), DMAHelper::base(&in), in.TotalBytes());
+    channel_->FindOrCreateRemoteBytesAddrMemoryRegion(rm_.name_,
+          &src_addr_, &mr_, &res_region_, in.TotalBytes());
+    auto src_buffer = const_cast<TensorBuffer*>(DMAHelper::buffer(&in));
+    memcpy(src_addr_, DMAHelper::base(&in), in.TotalBytes());
+    res_fake_allocator_ = new FakeAllocator(src_addr_);
+    tensor_ = new Tensor(res_fake_allocator_, in.dtype(), in.shape());
   } else {
     tensor_ = new Tensor(in.dtype(), in.shape());
   }
@@ -1160,12 +2434,13 @@ void RdmaTensorResponse::Clone(const Tensor& in, const TensorProto& proto,
 
 void RdmaTensorResponse::SendMetaData(const Tensor& in,
                                       const TensorProto& proto, bool is_dead) {
+  // LOG(INFO) << "SendMetaData...";
+  send_meta_begin_ = 0;
   RDMA_LOG(2) << "Request #" << rm_.request_index_
               << ": Meta data changed: " << rm_.name_;
   bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
   size_t tensor_bytes = (can_memcpy) ? in.TotalBytes() : proto.ByteSize();
 
-  // Send meta-data update:
   RdmaMessage rm;
   rm.type_ = RDMA_MESSAGE_META_DATA_UPDATE;
   rm.name_size_ = rm_.name_.size();
@@ -1186,31 +2461,46 @@ void RdmaTensorResponse::SendMetaData(const Tensor& in,
               << " data-type = " << DataTypeString(rm.data_type_) << "."
               << " is-dead = " << rm.is_dead_ << ")";
 
+  // rm.create_micros_ = send_meta_begin_;
   string message = RdmaMessage::CreateMessage(rm);
-  channel_->tx_message_buffer_->EnqueueItem(message);
-  channel_->tx_message_buffer_->SendNextItem();
+  int pair_index = (request_index_ % RdmaChannel::kNumMessageBuffers) / 2;
+  int buffer_index = 2 * pair_index;
+  auto* tx_message_buffer  = channel_->message_buffers()[buffer_index];
+  tx_message_buffer->EnqueueItem(message);
 }
 
 void RdmaTensorResponse::SendContent(const Tensor& in, const TensorProto& proto,
-                                     bool is_dead) {
+                                     bool is_dead,
+                                     bool is_resume) {
+  // update recv_local_send_rmda
+  // overcome the sendmeta effects
   bool can_memcpy = DataTypeCanUseMemcpy(in.dtype());
   size_t tensor_bytes = (can_memcpy) ? in.TotalBytes() : proto.ByteSize();
   uint32_t imm_data = rm_.request_index_;
+
+  AllocatorAttributes host_alloc_attrs;
+    host_alloc_attrs.set_nic_compatible(true);
+    host_alloc_attrs.set_on_host(true);
+  Allocator* allocator = src_dev_->GetAllocator(host_alloc_attrs);
   if (!is_dead) {
-    if (can_memcpy) {
+    if (can_memcpy && !is_resume || in.TotalBytes() == 0) {
+      // when send_content directly so we need copy data
       src_buffer_ = const_cast<TensorBuffer*>(DMAHelper::buffer(&in));
       if (src_buffer_ != nullptr) {
-        src_buffer_->Ref();  // Keep buffer alive until write is complete
-        src_addr_ = src_buffer_->data();
-        mr_ = RdmaMemoryMgr::Singleton().FindMemoryRegion(src_addr_,
-                                                          tensor_bytes);
+        // src_buffer_->Ref();  // Keep buffer alive until write is complete
+        // TODO(wuyongyu02): Move to Meta Change
+        channel_->FindOrCreateRemoteBytesAddrMemoryRegion(rm_.name_,
+            &src_addr_, &mr_, &res_region_, tensor_bytes);
+        if (tensor_bytes > 0) {
+          memcpy(src_addr_, src_buffer_->data(), tensor_bytes);
+        }
       }
-    } else {
+    } 
+    if(!can_memcpy){
       RDMA_LOG(2) << "Encoding proto: " << rm_.name_
                   << " (Size: " << tensor_bytes << ") " << in.DebugString();
-      src_addr_ = malloc(tensor_bytes);
-      mr_ = ibv_reg_mr(channel_->adapter_->pd_, src_addr_, tensor_bytes,
-                       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+      channel_->FindOrCreateRemoteBytesAddrMemoryRegion(rm_.name_,
+          &src_addr_, &mr_, &res_region_, tensor_bytes);
       proto.SerializeToArray(src_addr_, tensor_bytes);
     }
   } else {
@@ -1230,7 +2520,8 @@ void RdmaTensorResponse::SendContent(const Tensor& in, const TensorProto& proto,
                            rm_.rkey_, RDMA_WRITE_ID_TENSOR_WRITE, this);
 }
 
-void RdmaTensorResponse::SendErrorStatus(const Status& status) {
+void RdmaTensorResponse::SendErrorStatus(const Status& status,
+    const std::string& src_func_name) {
   RdmaMessage rm;
   rm.type_ = RDMA_MESSAGE_ERROR_STATUS;
   rm.name_size_ = rm_.name_.size();
@@ -1238,28 +2529,40 @@ void RdmaTensorResponse::SendErrorStatus(const Status& status) {
   rm.step_id_ = rm_.step_id_;
   rm.request_index_ = rm_.request_index_;
   rm.status_ = status;
-  LOG(ERROR) << "Step 0x" << std::hex << rm.step_id_ << std::dec
+
+  LOG(INFO) << "Step 0x" << (int64)rm.step_id_ << std::dec
              << ": Sending RDMA_MESSAGE_ERROR_STATUS #" << rm.request_index_
-             << ": " << rm.name_ << ". Status: " << status.ToString();
+             << ": " << rm.name_ << ". Status: " << status.ToString()
+             << " src_func_name:" << src_func_name;
 
   string message = RdmaMessage::CreateMessage(rm);
-  channel_->tx_message_buffer_->EnqueueItem(message);
-  channel_->tx_message_buffer_->SendNextItem();
 
+  int pair_index = (request_index_ % RdmaChannel::kNumMessageBuffers) / 2;
+  int buffer_index = 2 * pair_index;
+  // buffer_index = 0;
+  auto* tx_message_buffer  = channel_->message_buffers()[buffer_index];
+  // channel_->tx_message_buffer_->EnqueueItem(message);
+  // channel_->tx_message_buffer_->SendNextItem();
+  tx_message_buffer->EnqueueItem(message);
+  tx_message_buffer->SendNextItem();
   // Destroy the response.
   Destroy();
 }
 
 void RdmaTensorResponse::Destroy() {
+  if (res_region_.get() != nullptr) {
+    // res_region_->Unref();
+  }
+  // response end
   if (src_buffer_ != nullptr) {
-    src_buffer_->Unref();
+    // src_buffer_->Unref();
   }
   if (tensor_ != nullptr) {
     delete tensor_;
   }
   if (proto_ != nullptr) {
-    ibv_dereg_mr(mr_);
-    free(src_addr_);
+    // ibv_dereg_mr(mr_);
+    // free(src_addr_);
     delete proto_;
   }
   // Remove response from the pending list:
@@ -1275,8 +2578,10 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
   // Rdma Message format
   // type|name_size|name|step_id|request_index|remote_addr|rkey|is_dead|...
   //   1B|    2B   | 512|  8B   |     8B      |       8B  | 4B |    1B |...
-  // ...|data_type|tensor_shape|tensor_bytes|error_status          |
-  // ...|   XB    |    XB      |    8B      |size - 4B, proto - XB |
+  // ...|data_type|tensor_shape|tensor_bytes|create_micros|error_status       |
+  // ...|   XB    |    XB      |    8B      |8B        |size - 4B, proto - XB |
+  // ...| remote_bytes_addr    | remote_bytes_value
+  //         8B                |    4B
   //
   // ACK:             Imm-type: ACK
   // TENSOR_REQUEST:  Imm-type: MESSAGE
@@ -1292,12 +2597,13 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
   //                  Fields: type, request_index, name, step_id, error_status
   // Tensor content:  Imm-type: request_index
   size_t message_size = kMessageTotalBytes;
-  char message[kMessageTotalBytes + kErrorStatusMaxSize];
+  char message[kMessageTotalBytes + kErrorStatusMaxSize + 100];
   // type
   message[kTypeStartIndex] = static_cast<char>(rm.type_) & 0xff;
   // request index
   memcpy(&message[kRequestIndexStartIndex], &rm.request_index_,
          sizeof(rm.request_index_));
+
   // name, step_id, remote_addr, rkey
   if ((rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) ||
       (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST)) {
@@ -1308,10 +2614,16 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
            sizeof(rm.remote_addr_));
     memcpy(&message[kRkeyStartIndex], &rm.rkey_, sizeof(rm.rkey_));
     memcpy(&message[kStepIdStartIndex], &rm.step_id_, sizeof(rm.step_id_));
+
+    // memcpy(&message[KRemoteBytesAddrKeyStartIndex],
+    //          &rm.remote_bytes_addr_key_, sizeof(rm.remote_bytes_addr_key_));
+    // memcpy(&message[KRemoteBytesAddrStartIndex],
+    //          &rm.remote_bytes_addr_, sizeof(rm.remote_bytes_addr_));
   }
-  // is_dead, data_type, tensor_shape, tensor_bytes
+  // is_dead, data_type, tensor_shape, tensor_bytes, create_micros
   if ((rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) ||
       (rm.type_ == RDMA_MESSAGE_META_DATA_UPDATE) ||
+      (rm.type_ == RDMA_MESSAGE_DRIVER_BEGIN) ||
       (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST)) {
     memcpy(&message[kIsDeadStartIndex], &rm.is_dead_, sizeof(rm.is_dead_));
 
@@ -1321,14 +2633,18 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
            sizeof(rm.tensor_shape_));
     memcpy(&message[kTensorBytesStartIndex], &rm.tensor_bytes_,
            sizeof(rm.tensor_bytes_));
+    // memcpy(&message[kCreateMicrosStartIndex], &rm.create_micros_,
+    //       sizeof(rm.create_micros_));
   }
-// checksum
+  // checksum
 #ifdef RDMA_DATA_VALIDATION
   memcpy(&message[kChecksumStartIndex], &rm.checksum_, sizeof(rm.checksum_));
 #endif
   // error status
   if (rm.type_ == RDMA_MESSAGE_ERROR_STATUS) {
     ::grpc::Status gs = ToGrpcStatus(rm.status_);
+    // (wuyongyu) decrease the error message size https://km.sankuai.com/page/403000580
+    // ::grpc::Status gs = ::grpc::Status::OK;
     ErrorStatusProto gsProto;
     gsProto.set_error_code(gs.error_code());
     gsProto.set_error_message(gs.error_message());
@@ -1348,12 +2664,47 @@ string RdmaMessage::CreateMessage(const RdmaMessage& rm) {
   return string(message, message_size);
 }
 
-// Parse a RdmaMessage according to the pre-defined format
-// Args:
-//   rm: the message structure where the parsed message will be saved
-//   buffer: the place where the raw message is stored
-// Returns:
-//   None
+string FussionMessages::CreateFusionMessages(
+    const std::vector<RdmaMessage>& rmv) {
+  CHECK(rmv.size() < kRdmaMaxMessagesNumber)
+      << "FussionMessages CreateFusionMessages must less "
+      << kRdmaMaxMessagesNumber;
+  size_t message_size = kTotalFussionMessageSize;
+  char message[kTotalFussionMessageSize + RdmaMessage::kRdmaMessageBufferSize];
+  uint32_t* mn = (uint32_t*)&message[kMessageNumbersStartIndex];
+  *mn = rmv.size();
+  for (int i = 0; i < rmv.size(); i++) {
+    string m = RdmaMessage::CreateMessage(rmv[i]);
+    uint32_t* ms = (uint32_t*)&message[kMessageSizeStartIndex + i * 4];
+    *ms = m.size();
+    uint32_t s;
+    memcpy(&s, &message[kMessageSizeStartIndex + i * 4], sizeof(s));
+    memcpy(&message[KStringMessagesStartIndex +
+           i * RdmaMessage::kRdmaMessageBufferSize], m.data(), m.size());
+  }
+}
+
+void FussionMessages::ParseFussionMessages(std::vector<RdmaMessage>& rmv,
+    void* buffer) {
+  char* message = static_cast<char*>(buffer);
+  uint32_t mn = 0;
+  memcpy(&mn, &message[kMessageNumbersStartIndex], sizeof(mn));
+  if (mn == 0) {
+    return;
+  }
+  rmv.reserve(mn);
+  for (int i=0; i < mn; i++) {
+    uint32_t message_size;
+    memcpy(&message_size, &message[kMessageSizeStartIndex + i * 4],
+           sizeof(message_size));
+    char m[RdmaMessage::kMessageTotalBytes +
+            RdmaMessage::kErrorStatusMaxSize + 100];
+    memcpy(m, &message[KStringMessagesStartIndex +
+            i * RdmaMessage::kRdmaMessageBufferSize], message_size);
+    RdmaMessage::ParseMessage(rmv[i], &m);
+  }
+}
+
 void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
   char* message = static_cast<char*>(buffer);
   // type
@@ -1361,6 +2712,7 @@ void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
   // request index
   memcpy(&rm.request_index_, &message[kRequestIndexStartIndex],
          sizeof(rm.request_index_));
+
   // name, step_id, remote_addr, rkey
   if ((rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) ||
       (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST)) {
@@ -1371,10 +2723,17 @@ void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
            sizeof(rm.remote_addr_));
     memcpy(&rm.rkey_, &message[kRkeyStartIndex], sizeof(rm.rkey_));
     memcpy(&rm.step_id_, &message[kStepIdStartIndex], sizeof(rm.step_id_));
+    // memcpy(&rm.remote_bytes_addr_key_,
+    //          &message[KRemoteBytesAddrKeyStartIndex],
+    //          sizeof(rm.remote_bytes_addr_key_));
+    // memcpy(&rm.remote_bytes_addr_,
+    //          &message[KRemoteBytesAddrStartIndex],
+    //          sizeof(rm.remote_bytes_addr_));
   }
   // data_type, tensor_bytes, tensor_shape, is_dead
   if ((rm.type_ == RDMA_MESSAGE_TENSOR_REQUEST) ||
       (rm.type_ == RDMA_MESSAGE_META_DATA_UPDATE) ||
+      (rm.type_ == RDMA_MESSAGE_DRIVER_BEGIN) ||
       (rm.type_ == RDMA_MESSAGE_TENSOR_RE_REQUEST)) {
     memcpy(&rm.is_dead_, &message[kIsDeadStartIndex], sizeof(rm.is_dead_));
     memcpy(&rm.data_type_, &message[kDataTypeStartIndex],
@@ -1383,8 +2742,10 @@ void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
            sizeof(rm.tensor_shape_));
     memcpy(&rm.tensor_bytes_, &message[kTensorBytesStartIndex],
            sizeof(rm.tensor_bytes_));
+    // memcpy(&rm.create_micros_, &message[kCreateMicrosStartIndex],
+    //       sizeof(rm.create_micros_));
   }
-// checksum
+  // checksum
 #ifdef RDMA_DATA_VALIDATION
   memcpy(&rm.checksum_, &message[kChecksumStartIndex], sizeof(rm.checksum_));
 #endif
@@ -1399,6 +2760,10 @@ void RdmaMessage::ParseMessage(RdmaMessage& rm, void* buffer) {
                       gsProto.error_message(), gsProto.error_details());
     rm.status_ = FromGrpcStatus(gs);
   }
+}
+
+ibv_mr* RdmaChannel::FindMemoryRegion(void* addr, size_t length) {
+  return rdma_memory_mgr_->FindMemoryRegion(addr, length);
 }
 
 //*****************************************************************************
@@ -1423,12 +2788,15 @@ void RdmaMemoryMgr::InsertMemoryRegion(void* addr, size_t length,
   RDMA_LOG(1) << "Insert memory region 0x" << std::hex << mr->rkey << ". ["
               << addr << "-" << (void*)((uint64_t)addr + length - 1) << "]"
               << " SIZE: 0x" << length << " (" << allocator_name << ").";
+  // LOG(INFO) << "Insert memory region 0x" << std::hex << mr->rkey << ". ["
+  //           << addr << "-" << (void*)((uint64_t)addr + length - 1) << "]"
+  //           << " SIZE: 0x" << length << " (" << allocator_name << ").";
   if (mr != nullptr) {
     mutex_lock l(mrs_mu_);
     auto iter = std::upper_bound(mrs_.begin(), mrs_.end(), addr, &Comparator);
     mrs_.insert(iter, {mr, &MRDeleter});
   } else {
-    LOG(WARNING) << "Cannot register memory region";
+    LOG(FATAL) << "Cannot register memory region";
   }
 }
 
@@ -1445,7 +2813,7 @@ void RdmaMemoryMgr::EvictMemoryRegion(void* addr, size_t length) {
   }
 }
 
-const TensorMetaData* RdmaMemoryMgr::GetTensorMetaData(
+const TensorMetaData* RdmaChannel::GetTensorMetaData(
     const std::string& tensor_name) {
   mutex_lock l(tensor_meta_data_mu_);
   auto it = tensors_meta_data_.find(tensor_name);
@@ -1455,7 +2823,7 @@ const TensorMetaData* RdmaMemoryMgr::GetTensorMetaData(
   return &it->second;
 }
 
-const TensorMetaData* RdmaMemoryMgr::SetTensorMetaData(
+const TensorMetaData* RdmaChannel::SetTensorMetaData(
     const std::string& tensor_name, DataType dtype, const TensorShape& shape,
     bool is_dead, size_t proto_size) {
   mutex_lock l(tensor_meta_data_mu_);
@@ -1471,49 +2839,276 @@ const TensorMetaData* RdmaMemoryMgr::SetTensorMetaData(
 // RdmaTensorRequest
 //*****************************************************************************
 
+Status LocalDriverBufferMgr::QueueRdmaSave(const string& key,
+    const Args& send_args, Tensor* val, const bool is_dead,
+    const uint64& send_begin_micros) {
+  string key_hash(key);
+  if (!status_.ok()) {
+    Status s = status_;
+    return s;
+  }
+  QueueItems* queue_pair = queue_table_[key_hash];
+  CHECK(queue_pair != nullptr) << "QueueRdmaSave queue_pair is nullptr:"
+                               << key_hash;
+  ItemQueue * queue_item = queue_pair->queue;
+  queue_pair->queue_lock_.lock();
+  if (queue_item->empty() || queue_item->front()->HasValue()) {
+    RDMA_LOG(1) << "QueueRdmaSave Enqueue Send Item (key:" << key << "). ";
+    Item* item = new Item;
+    item->value = val;
+    item->is_dead = is_dead;
+    item->has_value = true;
+    item->send_args = send_args;
+    item->send_start_micros_ =  Env::Default()->NowMicros();
+    if (item->send_args.device_context) {
+      item->send_args.device_context->Ref();
+    }
+    queue_item->push_back(item);
+    // LOG(INFO) << "QueueRdmaEnqueueSendWaitRecv_Micros:"
+    //              << item->send_start_micros_ - send_args.rendezvous_micros;
+    queue_pair->queue_lock_.unlock();
+    return Status::OK();
+  }
+  RDMA_LOG(1) << "QueueRdmaSave Consume Recv Item (key:" << key << "). ";
+  Item* item = queue_item->front();
+  if (queue_item->size() == 1) {
+    VLOG(2) << "Clean up Send/Recv queue (key:" << key << "). ";
+    // queue_table_.erase(key_hash);
+    queue_item->pop_front();
+  } else {
+    queue_item->pop_front();
+  }
+  queue_pair->queue_lock_.unlock();
+  DCHECK(item->HasCallback());
+  // LOG(INFO) << "QueueRdmaRecvWaitSend_Micros key:" << key << " micros:"
+  //           << Env::Default()->NowMicros() - item->recv_start_micros_;
+  item->waiter(Status::OK(), send_args, item->recv_args, *val, is_dead);
+  delete item;
+  return Status::OK();
+}
+
+Status LocalDriverBufferMgr::RdmaSave(const string& key, const Args& send_args,
+    const Tensor& val, const bool is_dead) {
+  LOG(FATAL) << "this should not used;";
+  return Status::OK();
+}
+
+void LocalDriverBufferMgr::QueueLoadAsync(const string& key,
+    const Args& recv_args, DoneCallback done,
+    const uint64& request_start_micros) {
+  string key_hash(key);
+  if (!status_.ok()) {
+    // Rendezvous has been aborted.
+    Status s = status_;
+    done(s, Args(), recv_args, Tensor(), false);
+    return;
+  }
+  const auto& find = queue_table_.find(key_hash);
+  if (find == queue_table_.end()) {
+    for (auto& find : queue_table_) {
+      if (absl::StrContains(key_hash, find.first)) {
+        key_hash = find.first;
+        break;
+      }
+    }
+  }
+  QueueItems* queue_pair = queue_table_[key_hash];
+  CHECK(queue_pair != nullptr)
+      << "QueueLoadAsync queue_pair is null:" << key_hash;
+  ItemQueue * queue_item = queue_pair->queue;
+
+  queue_pair->queue_lock_.lock();
+  if (queue_item->empty() || !queue_item->front()->HasValue()) {
+    CancellationManager* cm = recv_args.cancellation_manager;
+    CancellationToken token = CancellationManager::kInvalidToken;
+    bool already_cancelled = false;
+    if (cm != nullptr) {
+        token = cm->get_cancellation_token();
+        already_cancelled = !cm->RegisterCallback(token, [this, token,
+                                                          key_hash] {
+          Item* item = nullptr;
+          {
+            QueueItems* queue_pair = queue_table_[key_hash];
+            ItemQueue * queue_item = queue_pair->queue;
+            if (queue_item->empty() || !queue_item->front()->HasValue()) {
+              for (auto it = queue_item->begin(); it != queue_item->end();
+                   it++) {
+                if ((*it)->cancellation_token == token) {
+                  item = *it;
+                  if (queue_item->size() == 1) {
+                    // key_hash queue can reuse
+                    // table_.erase(key_hash);
+                    queue_item->erase(it);
+                  } else {
+                    queue_item->erase(it);
+                  }
+                }
+              }
+            }
+          }
+          if (item != nullptr) {
+            item->waiter(StatusGroup::MakeDerived(
+                             errors::Cancelled("LoadAsync is cancelled.")),
+                         Args(), item->recv_args, Tensor(), /*is_dead=*/false);
+            delete item;
+          }
+      });
+    }
+    if (already_cancelled) {
+      queue_pair->queue_lock_.unlock();
+      done(StatusGroup::MakeDerived(
+                 errors::Cancelled("LoadAsync is cancelled.")),
+             Args(), recv_args, Tensor(), /*is_dead=*/false);
+      return;
+    }
+    RDMA_LOG(1) << "LoadAsync Enqueue Recv Item (key:" << key << "). ";
+    Item* item = new Item;
+    if (cm != nullptr) {
+      auto wrapped_done = std::bind(
+          [cm, token](const DoneCallback& done,
+                      // Begin unbound arguments.
+                      const Status& s, const Args& send_args,
+                      const Args& recv_args, const Tensor& v, bool dead) {
+            cm->TryDeregisterCallback(token);
+            RDMA_LOG(1) << "LoadAsync Enqueue Recv DoneCallback begin...";
+            done(s, send_args, recv_args, v, dead);
+          },
+          std::move(done), std::placeholders::_1, std::placeholders::_2,
+          std::placeholders::_3, std::placeholders::_4,
+          std::placeholders::_5);
+      item->waiter = std::move(wrapped_done);
+    } else {
+      item->waiter = std::move(done);
+    }
+    item->recv_args = recv_args;
+    item->cancellation_token = token;
+    item->request_start_micros_ = request_start_micros;
+    item->recv_start_micros_ = Env::Default()->NowMicros();
+    if (item->recv_args.device_context) {
+      item->recv_args.device_context->Ref();
+    }
+    queue_item->push_back(item);
+    queue_pair->queue_lock_.unlock();
+    return;
+  }
+  RDMA_LOG(1) << "LoadAsync Consume Send Item (key:" << key << "). ";
+  Item* item = queue_item->front();
+  // LOG(INFO) << "QueueRdmaSendWaitRecv_Micros key:" << key << " micros:"
+  //           << Env::Default()->NowMicros() - item->send_start_micros_;
+  if (queue_item->size() == 1) {
+    VLOG(2) << "Clean up Send/Recv queue (key:" << key << "). ";
+    // queue_table_.erase(key_hash);
+    queue_item->pop_front();
+  } else {
+    queue_item->pop_front();
+  }
+  queue_pair->queue_lock_.unlock();
+  DCHECK(item->HasValue());
+  done(Status::OK(), item->send_args, recv_args, *(item->value), item->is_dead);
+  delete item;
+}
+
+void LocalDriverBufferMgr::LoadAsync(const string& key, const Args& recv_args,
+                DoneCallback done) {
+  LOG(FATAL) << "LoadAsync is not impl.";
+  return;
+}
+
+size_t LocalDriverBufferMgr::InitLocalDriverBufferMgr() {
+  RDMA_LOG(1) << "InitLocalDriverBufferMgr begin...";
+  const auto& tensors_meta_data =
+      channel_->channel_record_->GetChannelTensorsMetaData();
+  const auto& tensors_uid_parsed_key =
+      channel_->channel_record_->GetChannelTensorsUidParsedkey();
+
+  CHECK(tensors_meta_data.size() == tensors_uid_parsed_key.size())
+        << "tensors_meta_data size:"
+        << tensors_meta_data.size()
+        << " tensors_uid_parsed_key size:"
+        << tensors_uid_parsed_key.size();
+
+  std::vector<string> print_keys;
+  for (auto& it : tensors_meta_data) {
+    auto tfi = table_.find(it.first);
+    if (tfi == table_.end()) {
+      table_[it.first] = new Item();
+    }
+    auto qfi = queue_table_.find(it.first);
+    if (qfi == queue_table_.end()) {
+      print_keys.emplace_back(it.first);
+      queue_table_[it.first] = new QueueItems();
+      queue_table_[it.first]->queue = new ItemQueue();
+    }
+  }
+  RDMA_LOG(1) << "InitLocalDriverBufferMgr Queutable:"
+            << print_keys.size()
+            << " "
+            << absl::StrJoin(print_keys, ",");
+  size_t ready_size = queue_table_.size();
+  RDMA_LOG(1) << "InitLocalDriverBufferMgr end size:" << ready_size;
+  return ready_size;
+}
+
+void LocalDriverBufferMgr::StartAbort(const Status& status) {
+  CHECK(!status.ok());
+  Table table;
+  {
+    status_.Update(status);
+    table_.swap(table);
+  }
+  for (auto& p : table) {
+    Item* item = p.second;
+    if (!item->HasCallback()) {
+      item->waiter(status, Args(), Args(), Tensor(), false);
+    }
+  }
+}
+
+//*****************************************************************************
+// RdmaTensorRequest
+//*****************************************************************************
+
 RdmaTensorRequest::RdmaTensorRequest(
     uint32_t index, const string& key, int64 step_id, RdmaChannel* channel,
     Device* dst_dev, const Rendezvous::Args recv_args,
     const RdmaTensorRequest::RecvDoneCallback& done)
     : index_(index),
-      key_(key),
       step_id_(step_id),
       channel_(channel),
       dst_dev_(dst_dev),
       recv_args_(recv_args),
-      meta_data_(RdmaMemoryMgr::Singleton().GetTensorMetaData(key)),
       result_tensor_(nullptr),
       proxy_tensor_(nullptr),
       rdma_addr_(nullptr),
       mr_(nullptr),
-      done_(done) {}
+      done_(done),
+      begin_start_req_(0) {
+        key_.assign(key, 0, RdmaMessage::kNameCapacity);
+}
 
-RdmaTensorRequest::~RdmaTensorRequest() { DeallocateTensors(); }
+RdmaTensorRequest::~RdmaTensorRequest() {
+  DeallocateTensors();
+}
 
 void RdmaTensorRequest::Done(const Status& s) {
   Tensor val = std::move(*result_tensor_);
-
-#ifdef RDMA_DATA_VALIDATION
-  // Validate checksum
-  // Unfortunately we can't always do a Checksum directly on the result tensor.
-  // If the result tensor is on GPU, then we need to copy it back to CPU. If
-  // we happen to be in the midst of a proxy callback, then the copying will
-  // get stuck.
-  uint64_t checksum = (proxy_tensor_ != nullptr)
-                          ? Checksum(nullptr, nullptr, *proxy_tensor_)
-                          : Checksum(dst_dev_, recv_args_.device_context, val);
-  ValidateChecksum(checksum_, checksum, val, index_, key_, "RDMA");
-#endif
-
   Rendezvous::Args recv_args = std::move(recv_args_);
   bool is_dead = (meta_data_ == nullptr) ? false : meta_data_->is_dead_;
   RecvDoneCallback done = done_;
   DeallocateTensors();
+  // if (result_region_.get() != nullptr) {
+  //   result_region_->Unref();
+  // }
   channel_->RemoveTensorRequest(index_);
   done(s, Rendezvous::Args(), recv_args, val, is_dead);
 }
 
 void RdmaTensorRequest::DeallocateTensors() {
+  // if (fake_allocator_ != nullptr) {
+  //   LOG(INFO) << "delete fake_allocator";
+  //   delete fake_allocator_;
+  //   fake_allocator_ = nullptr;
+  // }
   if (result_tensor_ != nullptr) {
     delete result_tensor_;
     result_tensor_ = nullptr;
@@ -1524,37 +3119,173 @@ void RdmaTensorRequest::DeallocateTensors() {
   }
 }
 
+size_t RdmaChannel::Alloc(size_t size, void** p, ibv_mr** mr, 
+                          bool dynamic, size_t realloc_size) const {
+  size_t allocate_size = size;
+  if (dynamic) {
+    ib_malloc(p, &allocate_size, size, EIGEN_MAX_ALIGN_BYTES);
+    *mr = ibv_reg_mr(pd_, *p, allocate_size,
+                    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    return allocate_size;
+  }
+  // chunk alloc
+  adapter_->recv_chunk_->Alloc(ib_allocate_size(size), p, mr, realloc_size);
+  return allocate_size;
+}
+
+bool RdmaChannel::FindLocalMr(const std::string& key,
+    void** remote_bytes_addr, ibv_mr** mr, int* length) {
+  mutex_lock l(remote_bytes_addr_mu_);
+  auto it = remote_bytes_addr_mrs_.find(key);
+  if (it == remote_bytes_addr_mrs_.end()) {
+   return false;
+  }
+  *remote_bytes_addr = it->second->addr_;
+  *mr = it->second->mr_ptr_;
+  *length = it->second->size_;
+  CHECK(*remote_bytes_addr != nullptr && *mr != nullptr)
+      << "key " << key << "*remote_bytes_addr is null?";
+  return *remote_bytes_addr != nullptr && *mr != nullptr;
+}
+
+void RdmaChannel::FindOrCreateRemoteBytesAddrMemoryRegion(
+    const std::string& key,
+    void** remote_bytes_addr,
+    ibv_mr** mr,
+    std::shared_ptr<RemoteBytesAddrMemoryRegion> * region,
+    size_t length,
+    const Allocator* alloc_attr) {
+  int allocate_size = 0;
+  // region has already exists addr's info.
+  if ((*region).get() != nullptr && (*region)->size_ > length) {
+    *remote_bytes_addr = (*region)->addr_;
+    *mr = (*region)->mr_ptr_;
+    // (*region)->Ref();
+    return;
+  }
+  // allocate_size = VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * length;
+  // allocate_size = Alloc(allocate_size, remote_bytes_addr, mr, true);
+  // *region = std::make_shared<RemoteBytesAddrMemoryRegion>(
+  //                                     *remote_bytes_addr, *mr, allocate_size);
+  // return;
+
+  // TODO(wuyongyu02): KV is used,
+  // because https://km.sankuai.com/page/641262306
+  // because sparse tensors, so we need malloc large memory
+  if (!could_send_driver_) {
+    remote_bytes_addr_mu_.lock();
+  }
+  auto it = remote_bytes_addr_mrs_.find(key);
+  if (it == remote_bytes_addr_mrs_.end()) {
+    allocate_size = VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * length;
+    // because concat DriverPrefixMessage
+    allocate_size += DriverPrefixMessage::kPrefixMessageTotalBytes;
+    allocate_size = Alloc(allocate_size, remote_bytes_addr, mr, false);
+    *region = std::make_shared<RemoteBytesAddrMemoryRegion>(
+        *remote_bytes_addr, *mr, allocate_size);
+    remote_bytes_addr_mrs_[key] = *region;
+    // LOG(INFO) << "#1 key:" << key << " size:" << length;
+    if (!could_send_driver_) {
+      remote_bytes_addr_mu_.unlock();
+    }
+  } else {
+    if (length > it->second->size_) {
+      allocate_size = VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * length;
+      // because concat DriverPrefixMessage
+      allocate_size += DriverPrefixMessage::kPrefixMessageTotalBytes;
+      allocate_size = Alloc(allocate_size, remote_bytes_addr, mr, false, it->second->size_);
+      *region = std::make_shared<RemoteBytesAddrMemoryRegion>(
+          *remote_bytes_addr, *mr, allocate_size);
+      if (length > it->second->size_) {
+        it->second = *region;
+        it->second->size_ = allocate_size;
+      }
+      // LOG(INFO) << "#2 create new tensor:" << key;
+    } 
+    // else if(it->second->RefCountIsOne()) {
+    //   allocate_size = VerbsEnvRegistrar::Instance()->RdmaTensorBufferRatio() * length;
+    //   // because concat DriverPrefixMessage
+    //   allocate_size += DriverPrefixMessage::kPrefixMessageTotalBytes;
+    //   allocate_size = Alloc(allocate_size, remote_bytes_addr, mr, false);
+    //   *region = std::make_shared<RemoteBytesAddrMemoryRegion>(
+    //       *remote_bytes_addr, *mr, allocate_size);
+    // } 
+    else {
+      *region = it->second;
+      *remote_bytes_addr = it->second->addr_;
+      *mr = it->second->mr_ptr_;
+      // LOG(INFO) << "#3 key:" << key << " size:" << length;
+    }
+    // (*region)->Ref();
+    if (!could_send_driver_) {
+      remote_bytes_addr_mu_.unlock();
+    }
+  }
+}
+
+size_t RdmaChannel::ChannelAllocateTensors(
+    const string& key,
+    const TensorMetaData& meta,
+    const Allocator* alloc_attr, ibv_mr** mr/*new */,
+    std::shared_ptr<RemoteBytesAddrMemoryRegion> * region,
+    void** rdma_addr/*new*/) {
+  size_t max_length = 0;
+  if (DataTypeCanUseMemcpy(meta.data_type_)) {
+    max_length = RecordTensorMetaData::GetTensorLength(meta.data_type_,
+                                                        meta.tensor_shape_);
+  } else {
+    max_length = meta.proto_size_;
+  }
+  // use allocator for RdmaTensorrequest
+  FindOrCreateRemoteBytesAddrMemoryRegion(key, rdma_addr, mr, region,
+                                          max_length, alloc_attr);
+  return max_length;
+}
+
+size_t RdmaTensorRequest::GetTensorLength(const TensorMetaData& meta) {
+  size_t max_length = 0;
+  if (DataTypeCanUseMemcpy(meta.data_type_)) {
+    max_length = RecordTensorMetaData::GetTensorLength(meta.data_type_,
+                                                        meta.tensor_shape_);
+  } else {
+    max_length = meta.proto_size_;
+  }
+  return max_length;
+}
+
 bool RdmaTensorRequest::AllocateTensors() {
-  result_tensor_ =
+  auto len = channel_->ChannelAllocateTensors(
+      key_, *meta_data_, dst_dev_->GetAllocator(recv_args_.alloc_attrs),
+      &mr_, &result_region_, &rdma_addr_);
+  if (DataTypeCanUseMemcpy(meta_data_->data_type_)) {
+    fake_allocator_ = new FakeAllocator(rdma_addr_);
+    result_tensor_ = new Tensor(fake_allocator_,
+                               meta_data_->data_type_, 
+                               meta_data_->tensor_shape_);
+  } else {
+    // proto
+    result_tensor_ =
       new Tensor(dst_dev_->GetAllocator(recv_args_.alloc_attrs),
                  meta_data_->data_type_, meta_data_->tensor_shape_);
-
+  }
   size_t tensor_size = result_tensor_->TotalBytes();
   bool can_memcpy = DataTypeCanUseMemcpy(result_tensor_->dtype());
-  if (can_memcpy) {
-    if (tensor_size == 0) {
-      return true;
-    }
-    rdma_addr_ = DMAHelper::base(result_tensor_);
-    mr_ = RdmaMemoryMgr::Singleton().FindMemoryRegion(rdma_addr_, tensor_size);
+  if (can_memcpy && tensor_size == 0) {
+    return true;
+  }
 #if GOOGLE_CUDA
-    if (mr_ == nullptr) {
+    if (can_memcpy) {
       // Can't RDMA directly to result. Use a proxy.
       proxy_tensor_ =
           new Tensor(GPUProcessState::singleton()->GetGpuHostAllocator(0),
                      result_tensor_->dtype(), result_tensor_->shape());
       rdma_addr_ = DMAHelper::base(proxy_tensor_);
-      mr_ =
-          RdmaMemoryMgr::Singleton().FindMemoryRegion(rdma_addr_, tensor_size);
+      // mr_ =
+      //     RdmaMemoryMgr::Singleton().FindMemoryRegion(rdma_addr_, tensor_size);
     }
 #endif
-  } else {
-    uint32_t proto_size = meta_data_->proto_size_;
-    rdma_addr_ = malloc(proto_size);
-    mr_ = ibv_reg_mr(RdmaMemoryMgr::Singleton().pd_, rdma_addr_, proto_size,
-                     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-  }
-  CHECK(mr_ != nullptr) << " No memory region found for address " << rdma_addr_
+  CHECK(mr_ != nullptr) << " No memory region found for address " 
+                        << rdma_addr_
                         << ": " << key_;
   return true;
 }
@@ -1574,7 +3305,9 @@ void RdmaTensorRequest::AllocateTensorsAsync(StatusCallback done) {
 }
 
 void RdmaTensorRequest::Send(RdmaMessageType message_type) {
-  RdmaMessageBuffer* rb = channel_->tx_message_buffer_;
+  int pair_index = (index_ % RdmaChannel::kNumMessageBuffers) / 2;
+  int buffer_index = 2 * pair_index;
+  auto* rb  = channel_->message_buffers()[buffer_index];
   RdmaMessage rm;
   rm.type_ = message_type;
   rm.request_index_ = index_;
@@ -1591,7 +3324,7 @@ void RdmaTensorRequest::Send(RdmaMessageType message_type) {
     rm.data_type_ = DT_INVALID;
   }
   rm.rkey_ = (mr_ == nullptr) ? 0 : mr_->rkey;
-
+  // rm.create_micros_ = 0;
   RDMA_LOG(1) << "Step 0x" << std::hex << rm.step_id_ << std::dec
               << ": Sending  " << MessageTypeToString(message_type) << " #"
               << index_ << ": " << rm.name_ << " on " << rdma_addr_
@@ -1604,50 +3337,44 @@ void RdmaTensorRequest::Send(RdmaMessageType message_type) {
 
 void RdmaTensorRequest::RecvTensorMetaData(DataType dtype, TensorShape shape,
                                            bool is_dead, size_t proto_size) {
-  meta_data_ = RdmaMemoryMgr::Singleton().SetTensorMetaData(
+  meta_data_ = channel_->SetTensorMetaData(
       key_, dtype, shape, is_dead, proto_size);
-
+  // channel record MetaData
+  channel_->channel_record_->Record(key_, *meta_data_);
+  // global record
+  // RecordTensorMetaData::Singleton().GlobalRecord(key_, *meta_data_);
   DeallocateTensors();
+  // if (result_region_.get() != nullptr) {
+  //   result_region_->Unref();
+  // }
   AllocateTensorsAsync(
       [this](const Status& s) { Send(RDMA_MESSAGE_TENSOR_RE_REQUEST); });
 }
 
 void RdmaTensorRequest::RecvTensorContent() {
+  uint64_t deal_data_begin = Env::Default()->NowMicros();
   bool can_memcpy = DataTypeCanUseMemcpy(meta_data_->data_type_);
   size_t message_size =
       can_memcpy ? result_tensor_->TotalBytes() : meta_data_->proto_size_;
+
   RDMA_LOG(1) << "Step 0x" << std::hex << step_id_ << std::dec
               << ": Received tensor content #" << index_ << ": " << key_
               << " (Size: 0x" << std::hex << message_size << ")";
 
-  Tensor val;
-
-#if GOOGLE_CUDA
-  if (proxy_tensor_ != nullptr) {
-    CountCopies(key_, (void*)DMAHelper::base(proxy_tensor_),
-                (void*)DMAHelper::base(result_tensor_),
-                result_tensor_->TotalBytes(), false);
-    GPUUtil::CopyCPUTensorToGPU(proxy_tensor_, recv_args_.device_context,
-                                dst_dev_, result_tensor_,
-                                [this](const Status& s) {
-                                  CHECK(s.ok()) << "copy tensor to gpu sync";
-                                  Done(s);
-                                },
-                                true /*sync_dst_compute*/);
-    return;
-  }
-#endif
-
   if (can_memcpy) {
+    // copy Tensor from rdma_addr_
+    // TODO(wuyongyu)
+    // only the rdma_addr_ has value , can memcpy
+    // if (result_tensor_->TotalBytes() > 0) {
+    //   memcpy(DMAHelper::base(result_tensor_), (void*)(rdma_addr_),
+    //         result_tensor_->TotalBytes());
+    // }
+    // Recv Tensor memory if can resuse
     Done(Status::OK());
   } else {
-    RDMA_LOG(2) << "Decoding proto: " << key_
-                << " (Size: " << meta_data_->proto_size_ << ")";
     TensorProto proto;
     CHECK(ParseProtoUnlimited(&proto, rdma_addr_, meta_data_->proto_size_))
         << "fail to parse proto from array";
-    ibv_dereg_mr(mr_);
-    free(rdma_addr_);
     Status s = dst_dev_->MakeTensorFromProto(proto, recv_args_.alloc_attrs,
                                              result_tensor_);
     Done(s);
@@ -1663,7 +3390,7 @@ void RdmaTensorRequest::RecvErrorStatus(const Status& status) {
 }
 
 void RdmaTensorRequest::Start() {
-  meta_data_ = RdmaMemoryMgr::Singleton().GetTensorMetaData(key_);
+  meta_data_ = channel_->GetTensorMetaData(key_);
   if (meta_data_ != nullptr) {
     AllocateTensorsAsync(
         [this](const Status& s) { Send(RDMA_MESSAGE_TENSOR_REQUEST); });
@@ -1671,5 +3398,6 @@ void RdmaTensorRequest::Start() {
     Send(RDMA_MESSAGE_TENSOR_REQUEST);
   }
 }
-
 }  // end namespace tensorflow
+
+#endif
