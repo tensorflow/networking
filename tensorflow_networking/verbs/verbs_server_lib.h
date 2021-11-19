@@ -16,9 +16,11 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_VERBS_SERVER_LIB_H_
 #define TENSORFLOW_CONTRIB_VERBS_VERBS_SERVER_LIB_H_
 
-#include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow_networking/verbs/grpc_verbs_service.h"
 #include "tensorflow_networking/verbs/rdma_mgr.h"
+#include "tensorflow/core/distributed_runtime/rpc/grpc_server_lib.h"
 
 namespace tensorflow {
 
@@ -43,7 +45,7 @@ class VerbsServer : public GrpcServer {
               RendezvousMgrCreationFunction rendezvous_mgr_func);
   Status ChannelCacheFactory(const ServerDef& server_def,
                              GrpcChannelCache** channel_cache);
-
+              
  private:
   RdmaMgr* rdma_mgr_;
 
@@ -51,13 +53,14 @@ class VerbsServer : public GrpcServer {
   mutex mu_;
 
   enum State { DISCONNECTED, CONNECTED };
-  State verbs_state_ TF_GUARDED_BY(mu_);
+  State verbs_state_ GUARDED_BY(mu_);
 
   GrpcVerbsService* verbs_service_ = nullptr;
-  std::unique_ptr<Thread> verbs_thread_ TF_GUARDED_BY(mu_);
+  std::unique_ptr<Thread> verbs_thread_ GUARDED_BY(mu_);
   GrpcChannelCache* channel_cache_ = nullptr;
 };
 
 }  // namespace tensorflow
 
+#endif  // TENSORFLOW_USE_VERBS
 #endif  // TENSORFLOW_CONTRIB_VERBS_VERBS_SERVER_LIB_H_

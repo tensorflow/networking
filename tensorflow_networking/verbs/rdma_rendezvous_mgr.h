@@ -16,9 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CONTRIB_VERBS_RDMA_RENDEZVOUS_MGR_H_
 #define TENSORFLOW_CONTRIB_VERBS_RDMA_RENDEZVOUS_MGR_H_
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow/core/distributed_runtime/base_rendezvous_mgr.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow_networking/verbs/rdma.h"
 #include "tensorflow_networking/verbs/rdma_mgr.h"
 
 namespace tensorflow {
@@ -46,6 +49,12 @@ class RdmaRendezvousMgr : public BaseRendezvousMgr {
   explicit RdmaRendezvousMgr(const WorkerEnv* env);
   void SetRdmaMgr(RdmaMgr* rdma_mgr) { rdma_mgr_ = rdma_mgr; }
 
+  bool NotifyAsyncAllocatorTest() {
+    rdma_mgr_->NotifyAsyncAllocator();
+  }
+
+
+
  protected:
   BaseRemoteRendezvous* Create(int64 step_id,
                                const WorkerEnv* worker_env) override;
@@ -57,4 +66,5 @@ class RdmaRendezvousMgr : public BaseRendezvousMgr {
 
 }  // end namespace tensorflow
 
+#endif  // TENSORFLOW_USE_VERBS
 #endif  // TENSORFLOW_CONTRIB_VERBS_RDMA_RENDEZVOUS_MGR_H_

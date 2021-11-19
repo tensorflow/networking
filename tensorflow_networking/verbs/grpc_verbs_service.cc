@@ -13,7 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef TENSORFLOW_USE_VERBS
+
 #include "tensorflow_networking/verbs/grpc_verbs_service.h"
+
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
 
@@ -71,10 +74,32 @@ void GrpcVerbsService::Shutdown() {
     }                                                                        \
   } while (0)
 
+#define ENQUEUE_Driver_REQUEST(method, method_func, supports_cancel)        \
+  do {                                                                       \
+    mutex_lock l(shutdown_mu_);                                              \
+    if (!is_shutdown_) {                                                     \
+      Call<GrpcVerbsService, grpc::VerbsService::AsyncService,               \
+           method##Req, method##Resp>::                                     \
+          EnqueueRequest(&verbs_service_, cq_,                               \
+                         &grpc::VerbsService::AsyncService::Request##method_func, \
+                         &GrpcVerbsService::method_func##Handler,                 \
+                         (supports_cancel));                                 \
+    }                                                                        \
+  } while (0)
+
+
 // This method blocks forever handling requests from the completion queue.
 void GrpcVerbsService::HandleRPCsLoop() {
   for (int i = 0; i < 10; ++i) {
     ENQUEUE_REQUEST(GetRemoteAddress, false);
+  }
+
+  for (int i =0; i < 10; ++i) {
+    ENQUEUE_Driver_REQUEST(DriverMessage, ReqDriverMessage, false);
+  }
+
+  for (int i =0; i < 10; ++i) {
+    ENQUEUE_Driver_REQUEST(PleSendOrCheck, ReqPleSendOrCheck, false);
   }
 
   void* tag;
@@ -98,6 +123,77 @@ void GrpcVerbsService::GetRemoteAddressHandler(
   ENQUEUE_REQUEST(GetRemoteAddress, false);
 }
 
+void GrpcVerbsService::ReqDriverMessageHandler(
+    WorkerCall<DriverMessageReq, DriverMessageResp>* call) {
+  Status s = ReqDriverMessageSync(&call->request, &call->response);
+  call->SendResponse(ToGrpcStatus(s));
+  ENQUEUE_Driver_REQUEST(DriverMessage, ReqDriverMessage, false);
+}
+
+void GrpcVerbsService::ReqPleSendOrCheckHandler(
+    WorkerCall<PleSendOrCheckReq, PleSendOrCheckResp>* call) {
+  Status s = ReqPleSendOrCheckSync(&call->request, &call->response);
+  call->SendResponse(ToGrpcStatus(s));
+  ENQUEUE_Driver_REQUEST(PleSendOrCheck, ReqPleSendOrCheck, false);
+}
+
+// synchronous method
+Status GrpcVerbsService::ReqDriverMessageSync(const DriverMessageReq* request,
+                              DriverMessageResp* response) {
+  // analysis send-driven Request
+  const string& remote_host_name = request->host_name();
+  RdmaChannel* channel = rdma_mgr_->FindChannel(remote_host_name);
+  CHECK(channel != nullptr) << "GrpcVerbsService RdmaChannel for:"
+      << remote_host_name <<  " is nullptr";
+  RDMA_LOG(1) << "GrpcVerbsService Channel local_name_:"
+            << channel->local_name_;
+  string worker_name = worker_env_->session_mgr->LegacySession()->worker_name;
+
+  CHECK(worker_name == channel->local_name_)
+      << "worker_name != channel->local_name_"
+      << " worker_name:" << worker_name
+      << " channel->local_name_:" << channel->local_name_;
+
+  // LOG(INFO) << "GrpcVerbsService recv: " << remote_host_name;
+  std::shared_ptr<RdmaSendDriverMgr> driver_mgr_ptr = channel->GetRdmaSendDriverMgr();
+  driver_mgr_ptr->RpcUpdateRemoteDriverEntry(request, response);
+  return Status::OK();
+}
+
+Status GrpcVerbsService::ReqPleSendOrCheckSync(const PleSendOrCheckReq* request,
+                              PleSendOrCheckResp* response) {
+  // analysis request
+  const string& remote_host_name = request->host_name();
+  RdmaChannel* channel = rdma_mgr_->FindChannel(remote_host_name);
+  CHECK(channel != nullptr) << "ReqPleSendOrCheckSync RdmaChannel for:"
+      << remote_host_name <<  " is nullptr";
+  LOG(INFO) << "ReqPleSendOrCheckSync Channel local_name_:"
+            << channel->local_name_;
+  string worker_name = worker_env_->session_mgr->LegacySession()->worker_name;
+
+  CHECK(worker_name == channel->local_name_)
+      << "worker_name != channel->local_name_"
+      << " worker_name:" << worker_name
+      << " channel->local_name_:" << channel->local_name_;
+
+  if (channel->could_send_driver_) {
+    LOG(INFO) << "ReqPleSendOrCheckSync for remote:"
+              << remote_host_name
+              << " is ok";
+    response->set_host_name(channel->local_name_);
+    response->set_is_ok(true);
+    return Status::OK();
+  }
+
+  // service allocate static mem and notify to endpoint
+  // TODO(wuyongyu02): change to large MR
+  channel->InitAndSetDriverStatus();
+  response->set_host_name(channel->local_name_);
+  response->set_is_ok(true);
+  // LOG(INFO) << "ReqPleSendOrCheckSync recv: " << remote_host_name;
+  return Status::OK();
+}
+
 // synchronous method
 Status GrpcVerbsService::GetRemoteAddressSync(
     const GetRemoteAddressRequest* request,
@@ -116,7 +212,13 @@ Status GrpcVerbsService::GetRemoteAddressSync(
   rc->SetRemoteAddress(ra, false);
   rc->Connect();
   int i = 0;
-  int idx[] = {1, 0};
+  // int idx[] = {1, 0};
+  int idx[RdmaChannel::kNumMessageBuffers + 1];
+  for (auto k=0; k < RdmaChannel::kNumMessageBuffers; k = k + 2) {
+    idx[k] = k+1;
+    idx[k+1] = k;
+    // LOG(ERROR) << "idx[" << k << "]:" << idx[k] << " idx[" << k+1 << "]:" << idx[k+1];
+  }
   std::vector<RdmaMessageBuffer*> mb(rc->message_buffers());
   CHECK_EQ(request->mr_size(), RdmaChannel::kNumMessageBuffers);
   for (const auto& mr : request->mr()) {
@@ -136,7 +238,7 @@ Status GrpcVerbsService::GetRemoteAddressSync(
   // setting up response
   response->set_host_name(
       worker_env_->session_mgr->LegacySession()->worker_name);
-  Channel* channel_info = response->mutable_channel();
+  ChannelInfo* channel_info = response->mutable_channel();
   channel_info->set_lid(rc->self().lid);
   channel_info->set_qpn(rc->self().qpn);
   channel_info->set_psn(rc->self().psn);
@@ -157,3 +259,5 @@ void SetNewVerbsService(GrpcVerbsService** handle, const WorkerEnv* worker_env,
 }
 
 }  // namespace tensorflow
+
+#endif  // TENSORFLOW_USE_VERBS
